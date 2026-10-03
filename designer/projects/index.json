@@ -1,0 +1,59 @@
+{
+ "projects": [
+  {
+   "id": "demo",
+   "name": "Demo \u2014 coastal plain to plateau",
+   "file": "demo/project.json",
+   "thumb": "demo/terrain.png",
+   "crs": "EPSG:32643",
+   "extent_km": [
+    60.0,
+    40.0
+   ],
+   "cell": 50.0,
+   "layers": [
+    "built",
+    "dem",
+    "farmland",
+    "flood",
+    "protected",
+    "rail",
+    "river_major",
+    "road_major",
+    "slope",
+    "water_body",
+    "woodland"
+   ],
+   "notes": "Synthetic terrain \u2014 700 m escarpment, two passes, two river valleys."
+  },
+  {
+   "id": "london2100",
+   "name": "London 2100 \u2014 orbital corridor",
+   "file": "london2100/project.json",
+   "thumb": "london2100/terrain.png",
+   "crs": "EPSG:27700",
+   "extent_km": [
+    150.0,
+    123.0
+   ],
+   "cell": 100.0,
+   "layers": [
+    "built",
+    "dem",
+    "exclusion",
+    "farmland",
+    "flood",
+    "greenbelt",
+    "protected",
+    "rail",
+    "river_major",
+    "road_major",
+    "slope",
+    "water_body",
+    "woodland"
+   ],
+   "reference": true,
+   "notes": "Real UK open data and the settled orbital, from london2100/v12."
+  }
+ ]
+}

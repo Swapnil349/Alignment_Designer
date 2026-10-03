@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "alignment-designer",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["serve.py", "8770", "--no-browser"],
+      "port": 8770
+    }
+  ]
+}

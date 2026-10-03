@@ -1,0 +1,200 @@
+{
+ "epsg": 27700,
+ "closed_ring": true,
+ "note": "loop.npy holds UNIQUE vertices; the ring is implicitly closed, so the last vertex joins the first. Do not append a duplicate closing point.",
+ "vertices": 16582,
+ "length_m": 412156.32,
+ "length_km": 412.156,
+ "segment_min_m": 2.414,
+ "segment_max_m": 24.978,
+ "segment_median_m": 24.899,
+ "nodes": [
+  {
+   "name": "P1",
+   "kind": "primary",
+   "vertex_index": 0,
+   "easting": 473624.17409361206,
+   "northing": 218688.07340605053,
+   "chainage_m": 0.0,
+   "moved_from_nominal_m": 37.71,
+   "nominal_easting": 473591.0,
+   "nominal_northing": 218706.0
+  },
+  {
+   "name": "S1",
+   "kind": "secondary",
+   "vertex_index": 1137,
+   "easting": 496680.48295425455,
+   "northing": 230268.05506982753,
+   "chainage_m": 28147.0,
+   "moved_from_nominal_m": 318.81,
+   "nominal_easting": 496763.0,
+   "nominal_northing": 230576.0
+  },
+  {
+   "name": "A3",
+   "kind": "airport",
+   "vertex_index": 1838,
+   "easting": 511505.45218551136,
+   "northing": 225491.60726816146,
+   "chainage_m": 45531.68,
+   "moved_from_nominal_m": 10.01,
+   "nominal_easting": 511500.0,
+   "nominal_northing": 225500.0
+  },
+  {
+   "name": "P2",
+   "kind": "primary",
+   "vertex_index": 2448,
+   "easting": 518974.73752881197,
+   "northing": 237670.2240392252,
+   "chainage_m": 60654.31,
+   "moved_from_nominal_m": 126.71,
+   "nominal_easting": 519056.0,
+   "nominal_northing": 237573.0
+  },
+  {
+   "name": "S2",
+   "kind": "secondary",
+   "vertex_index": 3502,
+   "easting": 541099.0661636947,
+   "northing": 232761.7219779158,
+   "chainage_m": 86850.96,
+   "moved_from_nominal_m": 356.49,
+   "nominal_easting": 540813.0,
+   "nominal_northing": 232549.0
+  },
+  {
+   "name": "A1",
+   "kind": "airport",
+   "vertex_index": 4186,
+   "easting": 555754.4371861102,
+   "northing": 224471.0975134511,
+   "chainage_m": 103876.59,
+   "moved_from_nominal_m": 71.43,
+   "nominal_easting": 555782.0,
+   "nominal_northing": 224537.0
+  },
+  {
+   "name": "P3",
+   "kind": "primary",
+   "vertex_index": 4784,
+   "easting": 569068.261332659,
+   "northing": 218381.86130105733,
+   "chainage_m": 118757.57,
+   "moved_from_nominal_m": 330.94,
+   "nominal_easting": 569135.0,
+   "nominal_northing": 218706.0
+  },
+  {
+   "name": "S3",
+   "kind": "secondary",
+   "vertex_index": 5754,
+   "easting": 576170.7975510397,
+   "northing": 198159.9135358575,
+   "chainage_m": 142846.94,
+   "moved_from_nominal_m": 86.57,
+   "nominal_easting": 576254.0,
+   "nominal_northing": 198136.0
+  },
+  {
+   "name": "P4",
+   "kind": "primary",
+   "vertex_index": 6968,
+   "easting": 560766.6261341032,
+   "northing": 175249.81738341894,
+   "chainage_m": 173033.84,
+   "moved_from_nominal_m": 18.13,
+   "nominal_easting": 560784.0,
+   "nominal_northing": 175255.0
+  },
+  {
+   "name": "S4",
+   "kind": "secondary",
+   "vertex_index": 8012,
+   "easting": 571067.3361516627,
+   "northing": 151554.13739171342,
+   "chainage_m": 199048.57,
+   "moved_from_nominal_m": 340.76,
+   "nominal_easting": 571361.0,
+   "nominal_northing": 151727.0
+  },
+  {
+   "name": "P5",
+   "kind": "primary",
+   "vertex_index": 9926,
+   "easting": 540654.2502590833,
+   "northing": 147388.08066231667,
+   "chainage_m": 246612.18,
+   "moved_from_nominal_m": 21.2,
+   "nominal_easting": 540647.0,
+   "nominal_northing": 147408.0
+  },
+  {
+   "name": "A2",
+   "kind": "airport",
+   "vertex_index": 10448,
+   "easting": 529304.3322945567,
+   "northing": 141155.92291731745,
+   "chainage_m": 259600.17,
+   "moved_from_nominal_m": 234.67,
+   "nominal_easting": 529403.0,
+   "nominal_northing": 140943.0
+  },
+  {
+   "name": "S5",
+   "kind": "secondary",
+   "vertex_index": 11352,
+   "easting": 509181.7856941033,
+   "northing": 132196.4879249712,
+   "chainage_m": 282101.76,
+   "moved_from_nominal_m": 116.13,
+   "nominal_easting": 509240.0,
+   "nominal_northing": 132096.0
+  },
+  {
+   "name": "S6",
+   "kind": "secondary",
+   "vertex_index": 12692,
+   "easting": 478761.10768737836,
+   "northing": 132726.10767236885,
+   "chainage_m": 315475.23,
+   "moved_from_nominal_m": 2.98,
+   "nominal_easting": 478759.0,
+   "nominal_northing": 132724.0
+  },
+  {
+   "name": "P6",
+   "kind": "primary",
+   "vertex_index": 13626,
+   "easting": 473492.8470581109,
+   "northing": 154405.8836592268,
+   "chainage_m": 338694.26,
+   "moved_from_nominal_m": 324.17,
+   "nominal_easting": 473199.0,
+   "nominal_northing": 154269.0
+  },
+  {
+   "name": "S7",
+   "kind": "secondary",
+   "vertex_index": 14299,
+   "easting": 462065.3187254984,
+   "northing": 166113.01534347178,
+   "chainage_m": 355420.85,
+   "moved_from_nominal_m": 128.73,
+   "nominal_easting": 461960.0,
+   "nominal_northing": 166039.0
+  },
+  {
+   "name": "S8",
+   "kind": "secondary",
+   "vertex_index": 15687,
+   "easting": 465285.90229688026,
+   "northing": 198205.24668033735,
+   "chainage_m": 389977.29,
+   "moved_from_nominal_m": 225.91,
+   "nominal_easting": 465066.0,
+   "nominal_northing": 198257.0
+  }
+ ]
+}

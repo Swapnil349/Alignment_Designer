@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Alignment Designer — DEM-based corridor planning</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --ink:#14181c; --mut:#6b7280; --line:#dfe3e8; --bg:#f6f5f2; --panel:#fff;
+  --acc:#1d4ed8; --warn:#c62828; --ok:#2e7d32; --amber:#b45309;
+}
+body{font:13px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--ink);
+     background:var(--bg);height:100vh;overflow:hidden}
+#app{display:flex;height:100vh}
+
+#left{width:286px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--line);
+      display:flex;flex-direction:column;overflow:hidden}
+#leftScroll{flex:1;overflow-y:auto}
+#centre{flex:1;display:flex;flex-direction:column;min-width:0}
+#maprow{flex:1;position:relative;min-height:0}
+#charts{height:296px;flex-shrink:0;border-top:1px solid var(--line);background:#fff;
+        display:flex;flex-direction:column}
+#right{width:352px;flex-shrink:0;background:var(--panel);border-left:1px solid var(--line);
+       display:flex;flex-direction:column;overflow:hidden}
+#rightScroll{flex:1;overflow-y:auto}
+
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-thumb{background:#ccd2d8;border-radius:5px}
+
+.hd{padding:12px 14px;background:#14181c;color:#fff;flex-shrink:0}
+.hd h1{font-size:13.5px;font-weight:650;letter-spacing:.2px}
+.hd p{font-size:10.5px;color:#9fb3d0;margin-top:2px}
+.sec{padding:11px 14px;border-bottom:1px solid var(--line)}
+.sec h3{font-size:10px;font-weight:700;color:var(--mut);text-transform:uppercase;
+        letter-spacing:.7px;margin-bottom:9px;display:flex;justify-content:space-between}
+.row{display:flex;align-items:center;gap:8px;margin-bottom:7px}
+.row label{flex:1.1;font-size:11px;color:#4b5563}
+.row input[type=range]{flex:1.2;accent-color:var(--acc);cursor:pointer;height:3px;min-width:0}
+.val{font:600 11px ui-monospace,monospace;color:var(--acc);min-width:62px;text-align:right}
+.chk{display:flex;align-items:center;gap:7px;margin-bottom:6px;font-size:11.5px;cursor:pointer}
+.chk input{accent-color:var(--acc);cursor:pointer}
+button{width:100%;padding:8px;background:var(--acc);color:#fff;border:0;border-radius:6px;
+       cursor:pointer;font:600 12px system-ui;letter-spacing:.2px}
+button:hover{background:#1a43c0} button:disabled{background:#9aa3ad;cursor:default}
+button.sec2{background:#eef1f4;color:#333;margin-top:6px}
+button.sec2:hover{background:#e2e7ec}
+button.exp{background:#243447;color:#fff;margin-top:5px;font-size:11.5px;padding:7px}
+button.exp:hover{background:#31465f}
+button.tiny{width:auto;padding:3px 8px;font-size:10.5px;border-radius:5px}
+select,input[type=text],input[type=number]{width:100%;padding:6px;border:1px solid var(--line);
+       border-radius:5px;font-size:11.5px;background:#fff;color:var(--ink)}
+.btnrow{display:flex;gap:6px;margin-top:6px}
+.btnrow button{margin-top:0}
+
+canvas#map{display:block;width:100%;height:100%;cursor:grab}
+canvas#map:active{cursor:grabbing}
+.chartbox{flex:1;display:flex;flex-direction:column;border-top:1px solid var(--line);min-height:0}
+.chartbox:first-child{border-top:0}
+.chartbox h4{font-size:9.5px;font-weight:700;color:var(--mut);text-transform:uppercase;
+             letter-spacing:.6px;padding:5px 10px;border-bottom:1px solid var(--line);
+             flex-shrink:0;display:flex;justify-content:space-between}
+.chartbox canvas{flex:1;width:100%;min-height:0}
+
+.legend{position:absolute;top:12px;right:12px;background:rgba(255,255,255,.94);
+        border:1px solid var(--line);border-radius:7px;padding:9px 11px;font-size:10.5px;
+        box-shadow:0 2px 12px rgba(0,0,0,.09);max-width:250px}
+.legend h4{font-size:10px;font-weight:700;margin-bottom:6px;text-transform:uppercase;
+           letter-spacing:.6px;color:var(--mut)}
+.li{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.sw{width:22px;height:6px;border-radius:3px;flex-shrink:0}
+#readout{position:absolute;bottom:12px;left:12px;background:rgba(255,255,255,.94);
+         border:1px solid var(--line);border-radius:6px;padding:6px 10px;
+         font:10.5px ui-monospace,monospace;color:#374151;max-width:70%}
+#status{position:absolute;top:12px;left:12px;background:rgba(20,24,28,.9);color:#fff;
+        border-radius:6px;padding:8px 13px;font-size:12px;display:none;max-width:60%}
+#editbar{position:absolute;bottom:12px;right:12px;background:rgba(255,255,255,.95);
+         border:1px solid var(--line);border-radius:7px;padding:5px;display:flex;gap:4px;
+         box-shadow:0 2px 10px rgba(0,0,0,.09)}
+#editbar button{width:auto;padding:5px 10px;font-size:11px;background:#eef1f4;color:#333}
+#editbar button.on{background:var(--acc);color:#fff}
+
+table.res{width:100%;border-collapse:collapse;font-size:11.5px}
+table.res td{padding:3px 0;border-bottom:1px solid #f0f2f4;vertical-align:top}
+table.res td:last-child{text-align:right;font:600 11.5px ui-monospace,monospace;white-space:nowrap}
+.warnrow td:last-child{color:var(--warn)} .okrow td:last-child{color:var(--ok)}
+.amberrow td:last-child{color:var(--amber)}
+.note{font-size:10.5px;color:var(--mut);line-height:1.55;margin-top:7px}
+.note b{color:#374151}
+table.cmp{width:100%;border-collapse:collapse;font-size:10.5px}
+table.cmp th{text-align:left;font-size:9px;color:var(--mut);text-transform:uppercase;
+             letter-spacing:.4px;padding:3px 2px;border-bottom:1.5px solid var(--ink)}
+table.cmp td{padding:4px 2px;border-bottom:1px solid #eef0f2;font-variant-numeric:tabular-nums}
+table.cmp tr.opt{cursor:pointer} table.cmp tr.opt:hover{background:#f2f6ff}
+table.cmp tr.sel{background:#e5edff;box-shadow:inset 3px 0 0 var(--acc)}
+table.cmp tr.win td{font-weight:700}
+.swatch{display:inline-block;width:11px;height:11px;border-radius:3px;vertical-align:-1px;
+        border:1px solid rgba(0,0,0,.25)}
+.crown{color:#b8860b} .front{color:#0e7490;font-weight:700}
+.basis{font-size:10px;color:var(--mut);line-height:1.6;margin-top:8px;
+       border-left:2px solid var(--line);padding-left:9px;font-family:ui-monospace,monospace}
+.cp{display:flex;align-items:center;gap:6px;margin-bottom:4px;font-size:11.5px}
+.cp .dot{width:9px;height:9px;border-radius:50%;flex-shrink:0;background:#14181c}
+.cp input{flex:1;padding:3px 5px;font-size:11px}
+.cp button{width:auto;padding:2px 6px;font-size:10px;background:#eef1f4;color:#666;border-radius:4px}
+.cp button:hover{background:#fbdcdc;color:#b02a2a}
+.tabs{display:flex;border-bottom:1px solid var(--line);flex-shrink:0;background:#fbfbfa}
+.tabs div{flex:1;text-align:center;padding:9px 4px;font-size:11px;font-weight:600;color:var(--mut);
+          cursor:pointer;border-bottom:2px solid transparent}
+.tabs div.on{color:var(--acc);border-bottom-color:var(--acc);background:#fff}
+.pill{display:inline-block;padding:1px 7px;border-radius:9px;font-size:9.5px;font-weight:700;
+      background:#eef1f4;color:#4b5563}
+.pill.ok{background:#e4f3e6;color:#1e6b28} .pill.bad{background:#fbe3e3;color:#a52020}
+#projCard{font-size:10.5px;color:var(--mut);line-height:1.5;margin-top:7px}
+#boot{position:fixed;inset:0;background:#14181c;color:#fff;display:flex;align-items:center;
+      justify-content:center;flex-direction:column;gap:12px;z-index:99;font-size:13px}
+#boot .bar{width:260px;height:4px;background:#2c3440;border-radius:3px;overflow:hidden}
+#boot .bar i{display:block;height:100%;width:0;background:#4d8bff;transition:width .2s}
+</style>
+</head>
+<body>
+
+<div id="boot"><div>Alignment Designer</div><div class="bar"><i id="bootBar"></i></div>
+  <div id="bootMsg" style="color:#9fb3d0;font-size:11.5px">starting…</div></div>
+
+<div id="app">
+
+  <!-- ══════════════ LEFT : project, standard, control points ══════════════ -->
+  <div id="left">
+    <div class="hd">
+      <h1>Alignment Designer</h1>
+      <p>DEM-based corridor planning · road · rail · high speed</p>
+    </div>
+    <div id="leftScroll">
+
+      <div class="sec">
+        <h3>Project</h3>
+        <select id="project"></select>
+        <div id="projCard"></div>
+      </div>
+
+      <div class="sec">
+        <h3>Design standard</h3>
+        <select id="mode"></select>
+        <div class="row" style="margin-top:8px"><label>Design speed</label>
+          <select id="speed" style="flex:1.2"></select></div>
+        <div id="modeParams"></div>
+        <label class="chk" style="margin-top:6px"><input type="checkbox" id="useDesirable">
+          <span>Use desirable radius, not the absolute minimum</span></label>
+      </div>
+
+      <div class="sec">
+        <h3>Control points <button class="tiny" id="cpClear">clear</button></h3>
+        <div id="cpList"></div>
+        <div class="note" id="cpHint">Click <b>+ Add</b> on the map toolbar, then click the map
+          to place points. Drag to move, and switch to <b>Delete</b> to remove one.</div>
+        <label class="chk" style="margin-top:7px"><input type="checkbox" id="closed">
+          <span>Closed circuit (return to the first point)</span></label>
+        <label class="chk"><input type="checkbox" id="stopAt" checked>
+          <span>Service stops at each control point</span></label>
+      </div>
+
+      <div class="sec">
+        <h3>Route</h3>
+        <button id="runOne">Route the alignment</button>
+        <button id="runStudy" class="sec2">Generate options</button>
+        <button id="runRef" class="sec2" style="display:none">Load reference alignment</button>
+        <div class="row" style="margin-top:9px"><label>Search stride</label>
+          <input type="range" id="s-stride" min="50" max="2500" step="25" value="400">
+          <span class="val" id="v-stride">400 m</span></div>
+        <div class="row"><label>Corridor width</label>
+          <input type="range" id="s-corr" min="0.10" max="0.70" step="0.02" value="0.30">
+          <span class="val" id="v-corr">±30 %</span></div>
+        <div class="note" id="geomNote"></div>
+      </div>
+
+      <div class="sec">
+        <h3>Export</h3>
+        <button id="expDXF" class="exp">DXF — 3D, by structure</button>
+        <button id="expXML" class="exp">LandXML — alignment + profile</button>
+        <button id="expCSV" class="exp">CSV — chainage table</button>
+        <button id="expJSON" class="exp">GeoJSON — structures + points</button>
+        <button id="expSheet" class="exp">PNG — drawing sheet</button>
+        <button id="expMap" class="exp">PNG + world file — georeferenced</button>
+        <button id="expStudy" class="exp">JSON — the whole option study</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════ CENTRE : map and charts ══════════════════════ -->
+  <div id="centre">
+    <div id="maprow">
+      <canvas id="map"></canvas>
+      <div class="legend" id="legend"></div>
+      <div id="readout">—</div>
+      <div id="status"></div>
+      <div id="editbar">
+        <button id="mPan" class="on">Pan</button>
+        <button id="mAdd">+ Add</button>
+        <button id="mDel">Delete</button>
+        <button id="mFit">Fit</button>
+      </div>
+    </div>
+    <div id="charts">
+      <div class="chartbox">
+        <h4><span>Long section — ground, design level, structures</span>
+            <span id="profStat"></span></h4>
+        <canvas id="profile"></canvas></div>
+      <div class="chartbox" style="flex:.72">
+        <h4><span>Mass haul — cumulative cut less fill</span>
+            <span id="haulStat"></span></h4>
+        <canvas id="haul"></canvas></div>
+    </div>
+  </div>
+
+  <!-- ══════════════════ RIGHT : results, options, weights ═════════════════ -->
+  <div id="right">
+    <div class="tabs">
+      <div data-tab="results" class="on">Results</div>
+      <div data-tab="options">Options</div>
+      <div data-tab="weights">Priorities</div>
+      <div data-tab="layers">Layers</div>
+    </div>
+    <div id="rightScroll">
+
+      <div class="pane" id="pane-results">
+        <div class="sec"><h3>View</h3><select id="view"></select></div>
+        <div class="sec"><h3>Alignment</h3><div id="results">
+          <p class="note">Pick a project, set the design standard, place control points and
+            press <b>Route the alignment</b>. Every route the search can produce satisfies the
+            minimum radius by construction — the constraint is structural, not a filter applied
+            afterwards.</p></div></div>
+        <div class="sec"><h3>Standard applied</h3><div id="stdBasis"></div></div>
+      </div>
+
+      <div class="pane" id="pane-options" style="display:none">
+        <div class="sec"><h3>Option comparison</h3><div id="cmp">
+          <p class="note">Press <b>Generate options</b> to route a family of alternatives across
+            design speed, priorities and corridor position, and compare them on the same
+            basis.</p></div></div>
+        <div class="sec"><h3>Decision weighting</h3><div id="critW"></div>
+          <div class="note">These weights only rank the options in the table — they do not
+            change any alignment.</div></div>
+      </div>
+
+      <div class="pane" id="pane-weights" style="display:none">
+        <div class="sec"><h3>What the route avoids</h3><div id="costW"></div>
+          <div class="note">Multipliers on a base construction cost of 1.0 per metre. The
+            sensitivity of the corridor to each of these <b>is</b> the finding of a route
+            study — so they are exposed, not buried.</div></div>
+        <div class="sec"><h3>Terrain response</h3><div id="terrW"></div></div>
+        <div class="sec"><h3>Cost rates</h3><div id="rateW"></div>
+          <div class="note">Comparative rates in millions per kilometre and per unit volume.
+            They rank alternatives against each other. Replace them with a local rate build-up
+            before any figure leaves the room.</div></div>
+      </div>
+
+      <div class="pane" id="pane-layers" style="display:none">
+        <div class="sec"><h3>Map layers</h3><div id="layerToggles"></div></div>
+        <div class="sec"><h3>Grid</h3><div id="gridInfo"></div></div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script src="js/standards.js?v=13"></script>
+<script src="js/engine.js?v=13"></script>
+<script src="js/costs.js?v=13"></script>
+<script src="js/study.js?v=13"></script>
+<script src="js/render.js?v=13"></script>
+<script src="js/export.js?v=13"></script>
+<script src="js/app.js?v=13"></script>
+</body>
+</html>

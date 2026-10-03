@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<title>London 2100 — High-Speed Rail Alignment Designer</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --ink:#14181c; --mut:#6b7280; --line:#dfe3e8; --bg:#f6f5f2; --panel:#fff;
+  --acc:#1d4ed8; --warn:#c62828; --ok:#2e7d32;
+}
+body{font:13px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--ink);
+     background:var(--bg);height:100vh;overflow:hidden}
+#app{display:flex;height:100vh}
+
+#left{width:252px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--line);
+      display:flex;flex-direction:column;overflow:hidden}
+#leftScroll{flex:1;overflow-y:auto}
+#centre{flex:1;display:flex;flex-direction:column;min-width:0}
+#maprow{flex:1;position:relative;min-height:0}
+#charts{height:236px;flex-shrink:0;border-top:1px solid var(--line);background:#fff;display:flex}
+#right{width:330px;flex-shrink:0;background:var(--panel);border-left:1px solid var(--line);
+       overflow-y:auto}
+
+::-webkit-scrollbar{width:9px}
+::-webkit-scrollbar-thumb{background:#ccd2d8;border-radius:5px}
+
+.hd{padding:13px 14px;background:#14181c;color:#fff;flex-shrink:0}
+.hd h1{font-size:13.5px;font-weight:650;letter-spacing:.2px}
+.hd p{font-size:10.5px;color:#9fb3d0;margin-top:2px}
+.sec{padding:11px 14px;border-bottom:1px solid var(--line)}
+.sec h3{font-size:10px;font-weight:700;color:var(--mut);text-transform:uppercase;
+        letter-spacing:.7px;margin-bottom:9px}
+.row{display:flex;align-items:center;gap:8px;margin-bottom:7px}
+.row label{flex:1;font-size:11px;color:#4b5563}
+.row input[type=range]{flex:1.1;accent-color:var(--acc);cursor:pointer;height:3px}
+.val{font:600 11px ui-monospace,monospace;color:var(--acc);min-width:50px;text-align:right}
+.chk{display:flex;align-items:center;gap:7px;margin-bottom:5px;font-size:11px}
+.chk input{accent-color:var(--acc);cursor:pointer}
+.lyr{display:flex;align-items:center;gap:6px;margin-bottom:5px}
+.lyr input[type=range]{accent-color:var(--acc);cursor:pointer;height:3px}
+button{width:100%;padding:8px;background:var(--acc);color:#fff;border:0;border-radius:6px;
+       cursor:pointer;font:600 12px system-ui;letter-spacing:.2px}
+button:hover{background:#1a43c0} button:disabled{background:#9aa3ad;cursor:default}
+button.sec2{background:#eef1f4;color:#333;margin-top:6px}
+button.sec2:hover{background:#e2e7ec}
+button.exp{background:#243447;color:#fff;margin-top:6px;font-size:11.5px}
+button.exp:hover{background:#31465f}
+select{width:100%;padding:6px;border:1px solid var(--line);border-radius:5px;font-size:11.5px;background:#fff}
+
+canvas#map{display:block;width:100%;height:100%;cursor:grab}
+canvas#map:active{cursor:grabbing}
+.chartbox{flex:1;display:flex;flex-direction:column;border-right:1px solid var(--line);min-width:0}
+.chartbox h4{font-size:10px;font-weight:700;color:var(--mut);text-transform:uppercase;
+             letter-spacing:.6px;padding:6px 10px;border-bottom:1px solid var(--line)}
+.chartbox canvas{flex:1;width:100%;min-height:0}
+
+.legend{position:absolute;top:12px;right:12px;background:rgba(255,255,255,.94);
+        border:1px solid var(--line);border-radius:7px;padding:9px 11px;font-size:10.5px;
+        box-shadow:0 2px 12px rgba(0,0,0,.09);max-width:230px}
+.legend h4{font-size:10px;font-weight:700;margin-bottom:6px;text-transform:uppercase;
+           letter-spacing:.6px;color:var(--mut)}
+.li{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.sw{width:22px;height:6px;border-radius:3px;flex-shrink:0}
+#readout{position:absolute;bottom:12px;left:12px;background:rgba(255,255,255,.94);
+         border:1px solid var(--line);border-radius:6px;padding:6px 10px;
+         font:10.5px ui-monospace,monospace;color:#374151}
+#status{position:absolute;top:12px;left:12px;background:rgba(20,24,28,.9);color:#fff;
+        border-radius:6px;padding:8px 13px;font-size:12px;display:none}
+
+table.res{width:100%;border-collapse:collapse;font-size:11px}
+table.res td{padding:3px 0;border-bottom:1px solid #f0f2f4}
+table.res td:last-child{text-align:right;font:600 11px ui-monospace,monospace}
+.warnrow td:last-child{color:var(--warn)} .okrow td:last-child{color:var(--ok)}
+.note{font-size:10px;color:var(--mut);line-height:1.5;margin-top:6px}
+.pill{display:inline-block;padding:1px 6px;border-radius:9px;font-size:10px;font-weight:600}
+table.cmp{width:100%;border-collapse:collapse;font-size:10px}
+table.cmp th{text-align:left;font-size:9px;color:var(--mut);text-transform:uppercase;
+             letter-spacing:.4px;padding:3px 2px;border-bottom:1.5px solid var(--ink)}
+table.cmp td{padding:3px 2px;border-bottom:1px solid #eef0f2;font-variant-numeric:tabular-nums}
+table.cmp tr.opt{cursor:pointer} table.cmp tr.opt:hover{background:#f2f6ff}
+table.cmp tr.sel{background:#e5edff;box-shadow:inset 3px 0 0 var(--acc)}
+table.cmp tr.win td{font-weight:700}
+.swatch{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-2px;
+        border:1px solid rgba(0,0,0,.25)}
+.crown{color:#b8860b;font-size:11px}
+.trace{font-size:9.5px;color:var(--mut);line-height:1.55;margin-top:8px;
+       border-left:2px solid var(--line);padding-left:8px}
+.trace b{color:var(--ink)}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ══════════ LEFT : fixed controls ══════════ -->
+  <div id="left">
+    <div class="hd">
+      <h1>London 2100</h1>
+      <p>HSR Alignment Designer</p>
+    </div>
+    <div id="leftScroll">
+
+      <div class="sec">
+        <h3>Corridor</h3>
+        <div class="row"><label>From</label><select id="nodeA"></select></div>
+        <div class="row"><label>To</label><select id="nodeB"></select></div>
+        <button id="runLoop">Route the full loop</button>
+        <button id="runChain" class="sec2">Route open chain</button>
+        <button id="runStudy" class="sec2">Run alignments (2 nodes)</button>
+        <button id="optimum" class="sec2" disabled>Show optimum path</button>
+        <button id="run" class="sec2">Single alignment</button>
+        <button id="fitBtn" class="sec2">Zoom to alignment</button>
+      </div>
+
+      <div class="sec">
+        <h3>View mode</h3>
+        <select id="view"></select>
+        <div class="row" style="margin-top:8px"><label>Service</label></div>
+        <select id="service">
+          <option value="express">Express — 6 primaries</option>
+          <option value="expressAir">Express + airports — 9 calls</option>
+          <option value="semi">Primary + secondary — 14 calls</option>
+          <option value="stopping">All stations — 17 calls</option>
+        </select>
+      </div>
+
+      <div class="sec">
+        <h3>Speed</h3>
+        <div class="row"><label>Max speed</label>
+          <input type="range" id="s-vmax" min="200" max="800" step="10" value="750">
+          <span class="val" id="v-vmax">750 km/h</span></div>
+        <div class="row"><label>Accel / brake</label>
+          <input type="range" id="s-acc" min="0.3" max="1.5" step="0.05" value="1.5">
+          <span class="val" id="v-acc">1.50 m/s²</span></div>
+        <div class="row"><label>Dwell per stop</label>
+          <input type="range" id="s-dwell" min="0" max="180" step="10" value="60">
+          <span class="val" id="v-dwell">60 s</span></div>
+        <div id="svcSummary" class="note"></div>
+      </div>
+
+      <div class="sec">
+        <h3>Export</h3>
+        <button id="expDXF" class="exp">Export DXF for Rhino</button>
+        <button id="expMap" class="exp">Export map PNG (1:1 georef)</button>
+        <button id="expPNG" class="exp">Export sheet PNG</button>
+        <button id="expCSV" class="exp">Export CSV</button>
+        <button id="expJSON" class="exp">Export GeoJSON</button>
+        <div class="note">1:1 georef = exact pixel size of the QGIS base maps
+          (25.4 m/px). Turn all base layers off first for a transparent
+          alignment-only overlay.</div>
+      </div>
+
+      <div class="sec" id="ttSec" style="display:none">
+        <h3>Timetable</h3>
+        <div id="timetable"></div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══════════ CENTRE : map + charts ══════════ -->
+  <div id="centre">
+    <div id="maprow">
+      <canvas id="map"></canvas>
+      <div class="legend" id="legend"></div>
+      <div id="readout">—</div>
+      <div id="status"></div>
+    </div>
+    <div id="charts">
+      <div class="chartbox" style="border-right:0">
+        <h4>Long section — ground, rail level, structures and stations</h4>
+        <canvas id="profile"></canvas></div>
+    </div>
+  </div>
+
+  <!-- ══════════ RIGHT : scrollable detail ══════════ -->
+  <div id="right">
+    <div class="sec">
+      <h3>Results</h3>
+      <div id="results"><p class="note">Loading the canonical 17-station loop…
+        The search is curvature-constrained, so every route it can produce satisfies
+        the minimum radius by construction. Press <b>Route the full loop</b> only to
+        re-solve with different weights.</p></div>
+    </div>
+
+    <div class="sec" id="cmpSec" style="display:none">
+      <h3>Alignment comparison</h3>
+      <div id="cmp"></div>
+    </div>
+
+    <div class="sec">
+      <h3>Geometry</h3>
+      <div class="row"><label>Min radius</label>
+        <input type="range" id="s-rMin" min="6000" max="30000" step="200" value="8552">
+        <span class="val" id="v-rMin">8 552 m</span></div>
+      <div class="row"><label>Search stride</label>
+        <input type="range" id="s-stride" min="500" max="2200" step="50" value="800">
+        <span class="val" id="v-stride">800 m</span></div>
+      <div class="row"><label>Ruling gradient</label>
+        <input type="range" id="s-grade" min="0.5" max="4" step="0.1" value="2.5">
+        <span class="val" id="v-grade">2.5 %</span></div>
+      <div class="row"><label>Vert. curve R</label>
+        <input type="range" id="s-vR" min="20000" max="200000" step="1000" value="126000">
+        <span class="val" id="v-vR">126 000 m</span></div>
+      <div class="note" id="geomNote"></div>
+      <div class="note" style="color:#c62828">Accel 1.50 m/s² is the MbBO §13(5)
+        <b>never-exceed</b>, not a design value. Measured Shanghai TR08 is 0.81.</div>
+    </div>
+
+    <div class="sec">
+      <h3>Cost weights</h3>
+      <div class="row"><label>Settlements</label>
+        <input type="range" id="s-built" min="0" max="150" value="55"><span class="val" id="v-built">55</span></div>
+      <div class="row"><label>AONB</label>
+        <input type="range" id="s-aonb" min="0" max="150" value="40"><span class="val" id="v-aonb">40</span></div>
+      <div class="row"><label>Woodland</label>
+        <input type="range" id="s-wood" min="0" max="150" value="22"><span class="val" id="v-wood">22</span></div>
+      <div class="row"><label>Floodplain</label>
+        <input type="range" id="s-flood" min="0" max="80" value="10"><span class="val" id="v-flood">10</span></div>
+      <div class="row"><label>Terrain / slope</label>
+        <input type="range" id="s-slope" min="0" max="40" value="9"><span class="val" id="v-slope">9</span></div>
+      <div class="row"><label>River crossing</label>
+        <input type="range" id="s-river" min="0" max="60" value="14"><span class="val" id="v-river">14</span></div>
+      <div class="row"><label>BMV farmland</label>
+        <input type="range" id="s-alc" min="0" max="40" value="8"><span class="val" id="v-alc">8</span></div>
+      <div class="row"><label>Curve penalty</label>
+        <input type="range" id="s-turn" min="0" max="200" value="55"><span class="val" id="v-turn">55</span></div>
+    </div>
+
+    <div class="sec">
+      <h3>Constraint layers</h3>
+      <div id="layerToggles"></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- v12 · default view = constraint layers on white · terrain topography -->
+<!-- ?v= query strings bust the preview pane's script cache — bump on every release -->
+<script src="js/data_grid.js?v=12"></script>
+<script src="js/data_base.js?v=12"></script>
+<script src="js/data_loop.js?v=12"></script>
+<script src="js/engine.js?v=12"></script>
+<script src="js/study.js?v=12"></script>
+<script src="js/render.js?v=12"></script>
+<script src="js/app.js?v=12"></script>
+</body>
+</html>
