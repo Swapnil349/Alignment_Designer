@@ -1,0 +1,279 @@
+{
+ "name": "MAHSR BKC - Thane (existing design, from public sources)",
+ "source": "Line: OpenStreetMap ways 916108435 + 1125530002 (ODbL), anchored at the portal CH 21.150. Levels: published depths and one JICA rail level - see profile.pins.",
+ "epsg": 32643,
+ "closed": false,
+ "chainage_start_m": 150.7,
+ "length_m": 28434.3,
+ "pts": [
+  [
+   275137.12,
+   2109566.68
+  ],
+  [
+   275519.91,
+   2109807.06
+  ],
+  [
+   275704.77,
+   2109923.04
+  ],
+  [
+   276830.46,
+   2110627.36
+  ],
+  [
+   276867.97,
+   2110653.7
+  ],
+  [
+   277160.05,
+   2110828.06
+  ],
+  [
+   277425.6,
+   2110968.11
+  ],
+  [
+   277564.99,
+   2111033.24
+  ],
+  [
+   277679.48,
+   2111086.73
+  ],
+  [
+   277957.3,
+   2111200.51
+  ],
+  [
+   278240.44,
+   2111300.25
+  ],
+  [
+   278431.85,
+   2111358.85
+  ],
+  [
+   278644.26,
+   2111416.52
+  ],
+  [
+   281387.48,
+   2112129.5
+  ],
+  [
+   290412.25,
+   2114478.06
+  ],
+  [
+   290775.35,
+   2114589.0
+  ],
+  [
+   291112.28,
+   2114714.76
+  ],
+  [
+   291441.05,
+   2114860.51
+  ],
+  [
+   291760.5,
+   2115025.71
+  ],
+  [
+   292018.73,
+   2115177.8
+  ],
+  [
+   292285.45,
+   2115354.06
+  ],
+  [
+   292526.62,
+   2115531.97
+  ],
+  [
+   292773.74,
+   2115734.79
+  ],
+  [
+   293009.68,
+   2115950.5
+  ],
+  [
+   293220.15,
+   2116163.87
+  ],
+  [
+   293432.59,
+   2116402.76
+  ],
+  [
+   293619.92,
+   2116636.69
+  ],
+  [
+   294155.51,
+   2117382.6
+  ],
+  [
+   296432.45,
+   2120721.4
+  ],
+  [
+   296493.4,
+   2120824.38
+  ],
+  [
+   296548.17,
+   2120930.8
+  ],
+  [
+   296588.86,
+   2121021.83
+  ],
+  [
+   296631.6,
+   2121133.56
+  ],
+  [
+   296692.33,
+   2121344.44
+  ],
+  [
+   296715.54,
+   2121461.78
+  ],
+  [
+   296731.69,
+   2121580.35
+  ],
+  [
+   296741.5,
+   2121719.63
+  ],
+  [
+   296741.56,
+   2121859.26
+  ],
+  [
+   296733.82,
+   2121978.65
+  ],
+  [
+   296715.77,
+   2122117.12
+  ],
+  [
+   296692.64,
+   2122234.52
+  ],
+  [
+   296656.79,
+   2122369.46
+  ],
+  [
+   296611.59,
+   2122501.57
+  ],
+  [
+   296565.61,
+   2122612.0
+  ],
+  [
+   296447.01,
+   2122842.97
+  ],
+  [
+   295885.12,
+   2123857.26
+  ]
+ ],
+ "stations": [
+  {
+   "id": "BKC",
+   "name": "Mumbai (BKC)",
+   "kind": "terminal",
+   "approximate": true,
+   "E": 275228.0,
+   "N": 2109623.8,
+   "chainage_m": 258.0
+  },
+  {
+   "id": "Thane",
+   "name": "Thane",
+   "kind": "station",
+   "approximate": true,
+   "E": 296034.6,
+   "N": 2123597.1,
+   "chainage_m": 28284.9
+  }
+ ],
+ "profile": {
+  "kind": "rail",
+  "datum": "mixed public sources - indicative only",
+  "pins": [
+   {
+    "ch": 258.0,
+    "level": null,
+    "depth": 26.0,
+    "name": "BKC station (rail)",
+    "source": "https://openjicareport.jica.go.jp/pdf/12302873_02.pdf (FAD 2018: ~26 m ground to rail); platform ~24 m, base slab ~32 m (press)",
+    "confidence": "medium"
+   },
+   {
+    "ch": 6970.254899332887,
+    "level": null,
+    "depth": 53.0,
+    "name": "Vikhroli shaft",
+    "source": "https://www.tribuneindia.com/news/india/ahmedabad-mumbai-bullet-train-project-indias-largest-tunnel-boring-machine-begins-excavation/ \u2014 shaft ~56 m deep; rail taken ~3 m above the shaft base (assumption)",
+    "confidence": "low"
+   },
+   {
+    "ch": 16295.608739497979,
+    "level": null,
+    "depth": 36.0,
+    "name": "Sawli shaft (Ghansoli)",
+    "source": "https://metrorailnews.in/mumbai-ahmedabad-bullet-train-second-tbm-begins-work-on-indias-first-undersea-rail-tunnel-beneath-thane-creek/ \u2014 shaft ~39 m deep; rail taken ~3 m above the shaft base (assumption)",
+    "confidence": "low"
+   },
+   {
+    "ch": 21112.0,
+    "level": 30.146,
+    "depth": null,
+    "name": "near Shilphata portal",
+    "source": "https://openjicareport.jica.go.jp/pdf/12302873_02.pdf (FAD 2018, pre-detailed design: RL 30.146 m at Km 21/112)",
+    "confidence": "medium"
+   }
+  ]
+ },
+ "structures": [
+  [
+   150.7,
+   773.0,
+   "tunnel",
+   "BKC underground station box (C-1)"
+  ],
+  [
+   773.0,
+   21150.0,
+   "tunnel",
+   "C-2: TBM to Sawli, NATM Sawli - Shilphata"
+  ],
+  [
+   21150.0,
+   28584.9,
+   "viaduct",
+   "C-3 viaduct towards Thane"
+  ]
+ ],
+ "notes": [
+  "Plan from OpenStreetMap: the creek crossing is mapped as one straight 9.3 km chord between the reported Vikhroli and Sawli shaft positions - accurate to a few hundred metres at best.",
+  "Levels are pinned at four published points (BKC box, two shafts, one JICA 2018 rail level near the portal); everything between them is the designer's tunnel policy - an estimate.",
+  "Shaft depth is not rail level: the rail is assumed ~3 m above the shaft base (low confidence).",
+  "Thane Creek bed depth is not in any DEM (water is flat in Copernicus); the tunnel policy's 'creek bed below water' parameter is an assumption to vary (published: 2-6 m below chart datum in the middle/upper creek; tunnel 20-25 m below the bed).",
+  "The detailed-design L-section is not public; the user's own NHSRCL data supersedes all of this."
+ ]
+}

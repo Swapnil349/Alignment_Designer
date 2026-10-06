@@ -1,0 +1,17 @@
+# Copernicus GLO-30 tiles for Mumbai BKC - Shilphata portal - Thane
+# Listed 2026-10-06 with --dry-run (an HTTP HEAD on each tile; nothing downloaded):
+#   python designer/build/fetch_dem.py --controls studies/mahsr/stations_mumbai_thane.csv --buffer-km 5 --res 30 --out studies/mahsr/raw/dem30 --dry-run
+# Download with the same command without --dry-run (it resumes, and skips tiles
+# already on disk), or give the URL lines below to any downloader, e.g.
+#   grep -v '^#' studies/mahsr/dem_tiles_glo30_mumbai_thane.txt | wget -i - -P studies/mahsr/raw/dem30
+#
+# Copernicus GLO-30 for lon 72.818 .. 73.108, lat 19.023 .. 19.241 - 2 tiles
+#    Copernicus_DSM_COG_10_N19_00_E072_00_DEM    13.3 MB
+#    Copernicus_DSM_COG_10_N19_00_E073_00_DEM    45.9 MB
+# total 59 MB, of which 59 MB still to download, into studies/mahsr/raw/dem30
+#
+# Every tile in the box exists - none is reported missing (all-sea). The small ones are mostly Arabian Sea: N19E072 13.3 MB.
+# 2 tiles, 59 MB in all
+#
+https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N19_00_E072_00_DEM/Copernicus_DSM_COG_10_N19_00_E072_00_DEM.tif
+https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N19_00_E073_00_DEM/Copernicus_DSM_COG_10_N19_00_E073_00_DEM.tif

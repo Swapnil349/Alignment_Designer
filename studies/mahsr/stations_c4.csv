@@ -1,0 +1,7 @@
+name,lat,lon,kind,note
+C-4 start (CH 157.000),20.235602,72.910743,control,"exact - first vertex of the design centre line (Zaroli, just past tunnel MT-08)"
+Vapi,20.327501,72.949181,station,"exact - design centre line at CH 167.940"
+Bilimora,20.779179,73.010834,station,"exact - design centre line at CH 218.533"
+Surat,21.178799,72.932252,station,"exact - design centre line at CH 264.582"
+Bharuch,21.695126,72.951806,station,"exact - design centre line at CH 323.110"
+Vadodara,22.310316,73.179986,station,"approx. - design centre line at CH 397.0; Vadodara is not in the data"

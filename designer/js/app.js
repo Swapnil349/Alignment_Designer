@@ -51,12 +51,21 @@ async function start() {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     projects = (await res.json()).projects || [];
   } catch (err) {
-    boot(0.05, 'no projects found — run build/make_demo.py, then reload');
+    /* Opened by double-clicking index.html: the page loads from file://, but
+       Chrome and Edge refuse to fetch() the project packs from there. That looks
+       exactly like "no projects", which sent people off to rebuild data that was
+       never missing — so say what is actually wrong and how to open it. */
+    if (location.protocol === 'file:')
+      boot(0.05, 'This page has to be opened through the local server. In the ' +
+                 'Alignment_Designer folder run  python serve.py  — it opens ' +
+                 'http://localhost:8770/designer/ for you.');
+    else
+      boot(0.05, 'no projects found — run designer/build/make_demo.py, then reload');
     console.error(err);
     return;
   }
   if (!projects.length) {
-    boot(0.05, 'projects/index.json is empty — run build/make_demo.py');
+    boot(0.05, 'projects/index.json is empty — run designer/build/make_demo.py');
     return;
   }
   const sel = $('project');
@@ -91,10 +100,14 @@ async function loadProject(id) {
   cfg.weights = Object.assign({}, E.DEFAULT_WEIGHTS);
   strideAuto = true;
   result = null; study = null; hoverIdx = null;
+  ls.zoom = 1; ls.s0 = 0;
 
+  // leg / level / depth: the vertical intent a project can seed (see buildPolicy)
+  const num = v => (v === undefined || v === null || v === '' || !isFinite(+v)) ? undefined : +v;
   controls = (E.G.controls || []).map((c, i) => ({
     id: c.id || ('CP' + (i+1)), name: c.name || c.id || ('CP' + (i+1)),
     E: c.E, N: c.N, kind: c.kind || 'control',
+    leg: c.leg || undefined, level: num(c.level), depth: num(c.depth),
   }));
   /* A project with 17 seeded points is a circuit study; one with two is a
      point-to-point. Neither should force the other, so only the first two are
@@ -133,11 +146,19 @@ async function loadProject(id) {
   $('runRef').style.display = ref ? '' : 'none';
   if (ref) $('runRef').textContent = 'Load reference: ' + fmt(ref.length_m / 1000, 1) + ' km ' +
                                      (ref.closed ? 'loop' : 'line');
+  /* An existing design (one with levels or declared structures) is ranked
+     with the options by default — comparing against it is why it was
+     imported. A plain settled line, like London's, is not, so that study's
+     option family stays what it was. */
+  cfg.includeReference = !!(ref && (ref.profile || ref.structures));
+  $('inclRefRow').style.display = ref ? '' : 'none';
+  $('inclRef').checked = cfg.includeReference;
 
   buildModeUI(); buildParamUI(); buildWeightUI(); buildRateUI(); buildCriteriaUI();
   buildLayerUI(); buildViewUI(); buildGridInfo(); buildControlList();
   updateStandard();
   map.fit(); map.draw(); redrawCharts();
+  if (v3d) { v3d.setGrid(E.G); v3dScene(true); }
 }
 
 /* --------------------------------------------------------------- LAYOUT -- */
@@ -145,10 +166,16 @@ function resize() {
   const cv = $('map');
   const r = cv.parentElement.getBoundingClientRect();
   cv.width = Math.max(10, r.width); cv.height = Math.max(10, r.height);
-  for (const id of ['profile', 'haul']) {
-    const c = $(id), b = c.parentElement.getBoundingClientRect();
-    c.width = Math.max(10, b.width); c.height = Math.max(10, b.height - 26);
+  {
+    // The long section lives in a scrolling viewport: the canvas is exactly the
+    // visible area (clientWidth/Height leave out the always-on scrollbar).
+    const v = $('lsView'), c = $('profile');
+    c.width = Math.max(10, v.clientWidth); c.height = Math.max(10, v.clientHeight);
+    c.style.width = c.width + 'px'; c.style.height = c.height + 'px';
+    const h = $('haul'), b = h.parentElement.getBoundingClientRect();
+    h.width = Math.max(10, b.width); h.height = Math.max(10, b.height - 26);
   }
+  lsSync();
   if (map) { map.draw(); redrawCharts(); }
 }
 window.addEventListener('resize', resize);
@@ -178,6 +205,7 @@ function bindMap() {
         const d = dE*dE + dN*dN;
         if (d < bd) { bd = d; bi = q; }
       }
+      if (bi >= 0) lsFollow(result.P[bi].s);
       setHover(bi >= 0 ? bi : null);
     }
   };
@@ -194,14 +222,48 @@ function bindMap() {
   $('map').addEventListener('mouseleave', () => setHover(null));
   for (const id of ['profile', 'haul']) {
     $(id).addEventListener('mousemove', e => {
-      if (!result || !result._profX) return;
-      const t = result._profX;
-      const s = (e.offsetX - t.ml) / (t.W - t.ml - t.right) * t.L;
-      if (s < 0 || s > t.L) { setHover(null); return; }
-      setHover(Math.max(0, Math.min(result.P.length - 1, Math.round(s / 25))));
+      if (!result || !result.P || lsDrag) return;
+      const c = e.currentTarget, w = lsWindow();
+      const plotW = c.width - R.CH_ML - R.CH_MR;
+      const f = (e.offsetX - R.CH_ML) / plotW;
+      if (f < 0 || f > 1) { setHover(null); return; }
+      setHover(indexAtChainage(w.s0 + f * (w.s1 - w.s0)));
     });
     $(id).addEventListener('mouseleave', () => setHover(null));
   }
+  bindLongSection();
+
+  /* Right-click an alignment on the map to select that option. The row is
+     selected in the comparison table and the table brought into view, which
+     is what clicking the row would have done. Options often share stretches
+     of line, so where several pass under the cursor a repeat right-click on
+     the selected one moves on to the next — otherwise the ones underneath
+     could never be reached from the map. */
+  map.onPickOption = (id, e) => {
+    if (!study || !study.options.length) return;
+    if (!id) {
+      setStatus('No alignment under the cursor — right-click on (or right next to) a line');
+      setTimeout(() => setStatus(''), 2200);
+      return;
+    }
+    const hits = e ? map.pickOptions(e.offsetX, e.offsetY, 10) : [];
+    const near = hits.filter(h => h.d <= hits[0].d + 1.5).map(h => h.r.sc.id);
+    if (near.length > 1 && near.includes(map.selectedId) && id === map.selectedId)
+      id = near[(near.indexOf(map.selectedId) + 1) % near.length];
+    selectOption(id, false);
+    showTab('options');
+    const row = document.querySelector(`#cmp tr.opt[data-id="${id}"]`);
+    if (row) {
+      row.scrollIntoView({ block: 'nearest' });
+      row.classList.add('flash');
+      setTimeout(() => row.classList.remove('flash'), 900);
+    }
+    const o = study.options.find(z => z.sc.id === id);
+    setStatus(`Selected option ${id} — ${o ? o.sc.name : ''}` +
+              (near.length > 1 ? ` (${near.length} lines overlap here: ${near.join(', ')} — ` +
+                                 'right-click again for the next)' : ''));
+    setTimeout(() => setStatus(''), near.length > 1 ? 4000 : 2200);
+  };
 
   const modeBtn = (id, m) => $(id).onclick = () => {
     map.editMode = m;
@@ -216,12 +278,199 @@ function bindMap() {
   };
 }
 
+/* ------------------------------------------------------- LONG SECTION --- */
+/* The section is drawn over a chainage window: ls.zoom is the horizontal
+   magnification (1 = the whole route in the chart's width), ls.s0 the
+   chainage at its left edge, ls.ve the vertical exaggeration ('auto' fits the
+   visible levels; a number fixes the ratio — 1 shows slopes as they are).
+   The viewport scrolls natively: a spacer as wide as the zoomed section gives
+   it a real scrollbar, and the canvas stays put (position: sticky). */
+const ls = { zoom: 1, s0: 0, ve: 'auto' };
+let lsDrag = null;
+const LS_FINEST = 0.25;          // m per pixel at full zoom-in
+
+function lsLength() { return result && result.P ? result.P[result.P.length - 1].s : 0; }
+function lsPlotW() { return Math.max(10, $('profile').width - R.CH_ML - R.CH_MR); }
+function lsMaxZoom() { return Math.max(1, lsLength() / (lsPlotW() * LS_FINEST)); }
+function lsWindow() {
+  const L = lsLength();
+  ls.zoom = Math.max(1, Math.min(lsMaxZoom(), ls.zoom));
+  const span = L / ls.zoom;
+  ls.s0 = Math.max(0, Math.min(L - span, ls.s0));
+  return { s0: ls.s0, s1: ls.s0 + span, ve: ls.ve };
+}
+/** Spacer width and scroll position from the state (never the other way round). */
+function lsSync() {
+  const v = $('lsView'), sp = $('lsSpacer'), plotW = lsPlotW(), L = lsLength();
+  if (!v || !sp) return;
+  if (!L) { sp.style.width = '0px'; return; }
+  lsWindow();
+  sp.style.width = Math.round($('profile').width + plotW * (ls.zoom - 1)) + 'px';
+  const want = Math.round(ls.s0 / L * plotW * ls.zoom);
+  if (Math.abs(v.scrollLeft - want) >= 1) v.scrollLeft = want;
+}
+/** Zoom by a factor, keeping the chainage under x (canvas px) where it is. */
+function lsZoomAt(factor, x) {
+  const L = lsLength();
+  if (!L) return;
+  const plotW = lsPlotW(), w = lsWindow();
+  const fx = Math.max(0, Math.min(1, ((x === undefined ? R.CH_ML + plotW / 2 : x) - R.CH_ML) / plotW));
+  const anchor = w.s0 + fx * (w.s1 - w.s0);
+  ls.zoom = Math.max(1, Math.min(lsMaxZoom(), ls.zoom * factor));
+  ls.s0 = anchor - fx * (L / ls.zoom);
+  lsSync(); redrawCharts();
+}
+/** Bring a chainage into view when the section is zoomed (map hover follows). */
+function lsFollow(sCh) {
+  if (ls.zoom <= 1.0001) return;
+  const w = lsWindow(), span = w.s1 - w.s0, margin = span * 0.08;
+  if (sCh >= w.s0 + margin && sCh <= w.s1 - margin) return;
+  ls.s0 = sCh - span / 2;
+  lsSync();
+}
+function indexAtChainage(sCh) {
+  const P = result.P;
+  let lo = 0, hi = P.length - 1;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (P[m].s < sCh) lo = m + 1; else hi = m; }
+  if (lo > 0 && Math.abs(P[lo - 1].s - sCh) < Math.abs(P[lo].s - sCh)) lo--;
+  return lo;
+}
+function lsReadout() {
+  const el = $('lsRead');
+  if (!el) return;
+  const t = result && result._profX;
+  if (!t) { el.textContent = '—'; return; }
+  const mpp = t.mPerPx, ve = t.ve;
+  const c0 = t.ch0 || 0;                       // design chainage, where the line has one
+  const win = ls.zoom <= 1.0001 ? 'whole route'
+            : `km ${((t.s0 + c0) / 1000).toFixed(2)}–${((t.s1 + c0) / 1000).toFixed(2)}`;
+  // a fixed VE comes back as 9.9999…: show it as the 10 that was asked for
+  const veTxt = ve >= 10 || Math.abs(ve - Math.round(ve)) < 0.05 ? Math.round(ve) : ve.toFixed(1);
+  el.textContent = `${win} · ${mpp < 10 ? mpp.toFixed(1) : Math.round(mpp)} m/px · V ${veTxt}×`;
+  el.title = 'Horizontal: metres of chainage per screen pixel. Vertical exaggeration: ' +
+             'how much steeper slopes look than they are (1× = true slope).';
+}
+function bindLongSection() {
+  const v = $('lsView'), c = $('profile');
+  /* The section's header can wrap to a second line once a route fills its
+     readouts, which shrinks the viewport under a canvas sized earlier — and
+     clips the chainage axis. Re-size whenever the viewport itself changes. */
+  if (typeof ResizeObserver === 'function') {
+    let last = '';
+    new ResizeObserver(() => {
+      const k = v.clientWidth + 'x' + v.clientHeight;
+      if (k !== last) { last = k; resize(); }
+    }).observe(v);
+  }
+  v.addEventListener('scroll', () => {
+    const L = lsLength();
+    if (!L) return;
+    ls.s0 = v.scrollLeft / (lsPlotW() * ls.zoom) * L;
+    redrawCharts();
+  });
+  // Wheel zooms around the cursor; Shift+wheel and sideways trackpad swipes
+  // fall through to the native horizontal scroll.
+  v.addEventListener('wheel', e => {
+    if (!lsLength() || e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+    e.preventDefault();
+    const x = e.clientX - v.getBoundingClientRect().left;
+    lsZoomAt(e.deltaY < 0 ? 1.25 : 0.8, x);
+  }, { passive: false });
+  // Drag to pan.
+  c.addEventListener('mousedown', e => {
+    if (e.button !== 0 || ls.zoom <= 1.0001) return;
+    lsDrag = { x: e.clientX, left: v.scrollLeft };
+    v.classList.add('drag');
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', e => {
+    if (!lsDrag) return;
+    v.scrollLeft = lsDrag.left - (e.clientX - lsDrag.x);
+  });
+  window.addEventListener('mouseup', () => {
+    if (!lsDrag) return;
+    lsDrag = null; v.classList.remove('drag');
+  });
+  $('lsIn').onclick = () => lsZoomAt(2);
+  $('lsOut').onclick = () => lsZoomAt(0.5);
+  $('lsFit').onclick = () => { ls.zoom = 1; ls.s0 = 0; lsSync(); redrawCharts(); };
+  $('lsVE').onchange = e => { ls.ve = e.target.value; redrawCharts(); };
+}
+
 let hoverRaf = 0;
 function setHover(i) {
   if (hoverIdx === i) return;
   hoverIdx = i; map.hoverIdx = i;
+  if (v3d && v3dOpen) v3d.setMarker(i);
   if (!hoverRaf) hoverRaf = requestAnimationFrame(() => {
     hoverRaf = 0; map.draw(); redrawCharts();
+  });
+}
+
+/* --------------------------------------------------------------- 3-D VIEW -- */
+/* The 3-D block model (js/view3d.js) is laid over the map in the same box.
+   It follows the app: the selected alignment at its design level, the other
+   options beside it, the hover marker shared with the long section and the
+   map. It is display only — nothing it shows feeds back into a result. */
+let v3d = null, v3dOpen = false;
+function v3dScene(fit) {             // fit undefined: the viewer re-frames only if the block changed
+  if (!v3d || !v3dOpen || !v3d.ok) return;
+  if (v3d.G !== E.G) v3d.setGrid(E.G);
+  // the same family every time (the viewer drops the selected one itself), so
+  // switching options keeps the terrain block and camera instead of rebuilding
+  const others = study && map.study ? study.options : [];
+  const buf = Math.max(500, (+$('v3dBuf').value || 3) * 1000);
+  v3d.setScene({ selected: result, others, bufferM: buf, controls, fit });
+  const msg = $('v3dMsg');
+  msg.style.display = result ? 'none' : '';
+  msg.textContent = 'No alignment yet — route one or generate options to see it in 3-D. ' +
+                    'The terrain of the whole project is shown meanwhile.';
+}
+function open3D() {
+  if (!window.VIEW3D) { setStatus('The 3-D viewer (js/view3d.js) did not load'); return; }
+  $('v3dWrap').style.display = '';
+  v3dOpen = true; $('m3d').classList.add('on'); $('maprow').classList.add('v3d');
+  if (!v3d) {
+    v3d = VIEW3D.create($('v3d'), {
+      ve: +$('v3dVE').value,
+      // pointing at the line in 3-D drives the same hover as the map and section
+      onHover: hit => setHover(hit ? hit.i : null),
+      onPick: hit => { if (hit) { lsFollow(hit.s); setHover(hit.i); redrawCharts(); } },
+    });
+    if (!v3d.ok) {
+      const m = $('v3dMsg'); m.style.display = ''; m.textContent = v3d.error;
+    }
+  }
+  v3d.resize();
+  v3dScene(true);
+}
+function close3D() {
+  $('v3dWrap').style.display = 'none';
+  v3dOpen = false; $('m3d').classList.remove('on'); $('maprow').classList.remove('v3d');
+  map.draw();
+}
+function bind3D() {
+  $('m3d').onclick = () => v3dOpen ? close3D() : open3D();
+  $('v3dClose').onclick = close3D;
+  $('v3dReset').onclick = () => v3d && v3d.resetView();
+  $('v3dVE').oninput = e => {
+    $('v3dVEv').textContent = (+e.target.value) + '×';
+    if (v3d) v3d.setVerticalExaggeration(+e.target.value);
+  };
+  $('v3dX').onchange = e => v3d && v3d.setOptions({ xray: e.target.checked });
+  $('v3dL').onchange = e => {
+    if (!v3d) return;
+    const on = {};
+    for (const l of v3d.layers()) on[l.key] = e.target.checked;
+    v3d.setOptions({ showLayers: on });
+  };
+  $('v3dBuf').onchange = () => v3dScene(true);
+  // a click on the long section (not the end of a drag) flies the 3-D view there
+  let downX = null;
+  $('profile').addEventListener('mousedown', e => { downX = e.clientX; });
+  $('profile').addEventListener('click', e => {
+    if (!v3d || !v3dOpen || !result || hoverIdx == null || downX === null) return;
+    if (Math.abs(e.clientX - downX) < 4) v3d.flyTo(result.P[hoverIdx].s);
   });
 }
 
@@ -343,6 +592,27 @@ function buildControlList() {
       controls.splice(i, 1); buildControlList(); map.draw(); updateStandard();
     };
     host.appendChild(row);
+
+    /* Vertical intent, under each point: what the line does on the leg that
+       starts here (the last point has no leg), and an optional fixed rail
+       level or depth below ground — an underground station, a portal. Blank
+       means the standard's vertical policy decides. */
+    const v = document.createElement('div');
+    const legSel = i < controls.length - 1 || cfg.closed
+      ? `<select title="What the line does from here to the next point">
+           <option value="">→ policy default</option><option value="ground">→ follow ground</option>
+           <option value="elevated">→ viaduct</option><option value="tunnel">→ bored tunnel</option></select>`
+      : '<span style="flex:1.3;color:#9aa3ad">end of line</span>';
+    v.className = 'cpv' + (c.leg === 'tunnel' ? ' tun' : c.leg === 'elevated' ? ' elv' : '');
+    v.innerHTML = legSel +
+      `<input type="number" step="0.5" placeholder="depth m" title="Rail this far below ground here (underground station)" value="${c.depth ?? ''}">` +
+      `<input type="number" step="0.1" placeholder="level m" title="Rail level fixed here (overrides depth)" value="${c.level ?? ''}">`;
+    const sel = v.querySelector('select');
+    if (sel) { sel.value = c.leg || ''; sel.onchange = () => { c.leg = sel.value || undefined; buildControlList(); }; }
+    const [dIn, lIn] = v.querySelectorAll('input');
+    dIn.onchange = () => { c.depth = dIn.value === '' ? undefined : +dIn.value; };
+    lIn.onchange = () => { c.level = lIn.value === '' ? undefined : +lIn.value; };
+    host.appendChild(v);
   });
   if (!controls.length)
     host.innerHTML = '<div class="note">No control points yet.</div>';
@@ -524,7 +794,9 @@ function buildLegend() {
     h += li(ST.rampColour(0.5), 'Middle');
     h += li(ST.rampColour(1), 'Worst');
     h += '<div style="margin-top:6px;font-size:10px;color:#4b5563">Thicker lines are on the ' +
-         'Pareto front — nothing beats them on every criterion at once.</div>';
+         'Pareto front — nothing beats them on every criterion at once. The selected option ' +
+         'is drawn bold; right-click any other line to select it (again to cycle where ' +
+         'lines overlap).</div>';
   } else {
     h = '<h4>Constraints</h4>';
     for (const k in R.LAYER_STYLE) {
@@ -559,10 +831,11 @@ async function loadReference() {
     try {
       const r = ST.evaluateReference(ref, buildCfg());
       r.ms = performance.now() - t0;
-      result = r; study = null;
+      result = r; study = null; lsSync();
       map.result = r; map.study = null; map.selectedId = null;
       if (map.view === 'options') { map.view = 'alignment'; $('view').value = 'alignment'; }
       map.fitTo(r.P); map.draw(); redrawCharts(); showResults(); buildLegend();
+      v3dScene(true);
       showTab('results');
       setStatus('');
     } catch (err) {
@@ -589,14 +862,15 @@ async function runOne() {
       if (r.error) {
         setStatus(errorText(r));
         $('results').innerHTML = `<p class="note" style="color:#c62828"><b>Routing failed.</b><br>${errorText(r)}</p>`;
-        result = null; map.result = null; map.draw(); redrawCharts();
+        result = null; map.result = null; lsSync(); map.draw(); redrawCharts(); v3dScene();
         return;
       }
       r.ms = performance.now() - t0;
-      result = r; study = null;
+      result = r; study = null; lsSync();
       map.result = r; map.study = null; map.selectedId = null;
       if (map.view === 'options') { map.view = 'alignment'; $('view').value = 'alignment'; }
       map.fitTo(r.P); map.draw(); redrawCharts(); showResults(); buildLegend();
+      v3dScene(true);
       setStatus('');
     } catch (err) {
       setStatus('Error: ' + err.message); console.error(err);
@@ -609,6 +883,11 @@ function errorText(r) {
   if (r.error === 'radius audit failed')
     return `Radius audit FAILED: ${fmt(r.minR)} m at ${fmt(r.chainage/1000,1)} km against ` +
            `${fmt(r.rAchievable)} m guaranteed. The alignment has a corner — not delivered.`;
+  if (r.error === 'search budget exhausted')
+    return `The search for ${r.leg || 'a leg'} ran out of its step budget before reaching the ` +
+           `next point — a limit of the search, not of the geometry, so no radius was relaxed. ` +
+           `Add a control point part-way along that leg, narrow the corridor width, or raise ` +
+           `the search stride.`;
   if (r.error === 'no heading-continuous route')
     return `Cannot route ${r.leg || 'a leg'} with heading continuity. Raise the search stride, ` +
            `widen the corridor, lower the design speed, or move that control point.`;
@@ -626,14 +905,17 @@ async function runStudy() {
   showTab('options');
   const t0 = performance.now();
   try {
-    study = await ST.run(controls, buildCfg(), (i, n, name) =>
+    const st = await ST.run(controls, buildCfg(), (i, n, name) =>
       setStatus(`Option ${i+1} of ${n} — ${name}…`));
-    if (!study.options.length) {
+    if (!st.options.length) {
+      /* Keep the previous family (map, selection, 3-D) rather than leave the
+         map drawing options the panel no longer knows about. */
       setStatus('No option could be routed');
       $('cmp').innerHTML = `<p class="note" style="color:#c62828"><b>Nothing routed.</b><br>` +
-        study.failed.map(f => `${f.sc.name}: ${f.error}`).join('<br>') + `</p>`;
+        st.failed.map(f => `${f.sc.name}: ${f.error}`).join('<br>') + `</p>`;
       return;
     }
+    study = st;
     rankStudy();
     map.study = study.options;
     map.view = 'options'; $('view').value = 'options';
@@ -641,8 +923,9 @@ async function runStudy() {
     selectOption(best.sc.id, false);
     map.fitTo(best.P); map.draw();
     showComparison(); buildLegend();
-    setStatus(`${study.options.length} options in ${((performance.now()-t0)/1000).toFixed(1)} s`);
-    setTimeout(() => setStatus(''), 4000);
+    setStatus(`${study.options.length} options in ${((performance.now()-t0)/1000).toFixed(1)} s` +
+              (study.refError ? ` — the existing design could not be evaluated: ${study.refError}` : ''));
+    setTimeout(() => setStatus(''), study.refError ? 12000 : 4000);
   } catch (err) {
     setStatus('Error: ' + err.message); console.error(err);
   } finally {
@@ -666,13 +949,17 @@ function selectOption(id, fit) {
   if (!o) return;
   result = o; map.selectedId = id; map.result = o;
   if (fit !== false) map.fitTo(o.P);
+  lsSync();              // options differ in length: keep the window inside this one
   map.draw(); redrawCharts(); showResults(); showComparison();
+  v3dScene();            // the block spans every option: re-framed only when it was rebuilt
 }
 
 /* -------------------------------------------------------------- RESULTS -- */
 function redrawCharts() {
-  R.drawProfile($('profile'), result, hoverIdx);
-  R.drawMassHaul($('haul'), result, hoverIdx);
+  const view = result && result.P ? lsWindow() : null;
+  R.drawProfile($('profile'), result, hoverIdx, view);
+  R.drawMassHaul($('haul'), result, hoverIdx, view);
+  lsReadout();
   if (result) {
     $('profStat').textContent =
       `max cut ${result.q.earthworks.maxCut.toFixed(0)} m · max fill ${result.q.earthworks.maxFill.toFixed(0)} m`;
@@ -695,6 +982,8 @@ function showResults() {
   const grOK = m.maxGrade <= std.maxGrade * 1.02;
   const crestOK = r.vp.minCrestR >= std.vCrestR * 0.96;
   const sagOK = r.vp.minSagR >= std.vSagR * 0.96;
+  const fixedTies = (r.ties || []).filter(t => t.fixed).length;
+  const endTies = r.vp.pins - fixedTies;
 
   let h = `<table class="res">
     <tr><td>${r.search.closed ? 'Closed circuit' : 'Length'}</td><td>${fmt(m.length/1000,2)} km</td></tr>
@@ -708,8 +997,9 @@ function showResults() {
       <td>${m.maxGrade.toFixed(2)} %</td></tr>
     <tr class="${crestOK?'okrow':'amberrow'}"><td>Vertical R — crest</td><td>${fmt(r.vp.minCrestR)} m</td></tr>
     <tr class="${sagOK?'okrow':'amberrow'}"><td>Vertical R — sag</td><td>${fmt(r.vp.minSagR)} m</td></tr>
-    ${r.vp.pins ? `<tr class="${r.vp.tieError<1?'okrow':'warnrow'}"><td>Tie into existing ground<br>
-      <span style="color:#6b7280;font-weight:400">at the ${r.vp.pins === 2 ? 'two ends' : 'terminus'}</span></td>
+    ${r.vp.pins ? `<tr class="${r.vp.tieError<1?'okrow':'warnrow'}"><td>${fixedTies ? 'Levels held' : 'Tie into existing ground'}<br>
+      <span style="color:#6b7280;font-weight:400">${endTies === 2 ? 'the two ends' : endTies === 1 ? 'the terminus' : ''}${
+        fixedTies ? (endTies ? ' + ' : '') + fixedTies + ' fixed level' + (fixedTies > 1 ? 's' : '') : ''}</span></td>
       <td>${r.vp.tieError < 0.05 ? 'exact' : fmt(r.vp.tieError,1) + ' m out'}</td></tr>` : ''}
     <tr><td>Intersection points H / V</td><td>${m.hip} / ${r.vp.vip}</td></tr>
     ${r.search.reference
@@ -719,6 +1009,11 @@ function showResults() {
            <td>${r.search.closed ? fmt(r.search.closingSegment,1) + ' m' : fmt(r.P.length)}</td></tr>`
       : `<tr><td>Searched at stride<br><span style="color:#6b7280;font-weight:400">guarantees R ≥ ${fmt(r.search.rAchievable)} m</span></td>
            <td>${fmt(r.search.stride)} m</td></tr>
+         <tr class="${(r.search.epsilon || 1) > 1.2 ? 'amberrow' : ''}"><td>Search mode<br>
+           <span style="color:#6b7280;font-weight:400">${(r.search.epsilon || 1) > 1
+             ? 'weighted on the hardest leg — a higher ε trades route cost for speed'
+             : 'unweighted on every leg (near-optimal)'}</span></td>
+           <td>${(r.search.epsilon || 1) > 1 ? 'ε ' + r.search.epsilon : 'ε 1'}</td></tr>
          <tr><td>Terminal offset</td><td>${fmt(r.search.endGap)} m</td></tr>`}
     <tr><td>Journey time</td><td>${(r.sp.total/60).toFixed(2)} min</td></tr>
     <tr><td>Average speed</td><td>${r.sp.avg.toFixed(0)} km/h</td></tr>
@@ -737,9 +1032,9 @@ function showResults() {
       which the journey time below already accounts for. Move the control point to avoid it.</p>`;
   }
   if (r.vp.tieError >= 1)
-    h += `<p class="note" style="color:#c62828"><b>The profile cannot reach the ground at a
-      control point</b> — ${fmt(r.vp.tieError,1)} m short at
-      ${fmt(r.P[r.vp.tieAt].s/1000,1)} km. Within a ${std.maxGrade.toFixed(1)} % ruling
+    h += `<p class="note" style="color:#c62828"><b>The profile cannot reach the level required
+      at a control point</b> (its ground, or a level fixed there) — ${fmt(r.vp.tieError,1)} m short at
+      ${fmt((r.P[r.vp.tieAt].s + (r.ch0 || 0))/1000,1)} km. Within a ${std.maxGrade.toFixed(1)} % ruling
       gradient there is not enough length to climb or fall to that level. Move the point,
       accept a steeper gradient, or let the alignment approach it from further away.</p>`;
   if (r.search.reference)
@@ -751,6 +1046,7 @@ function showResults() {
            this standard needs — the line was set for a different speed or rule, and the
            speed profile below caps it accordingly.`}
       Change mode or design speed and press the button again to re-judge it.</p>`;
+  h += policyHTML(r, std);
   if (!radOK && !r.search.reference)
     h += `<p class="note" style="color:#c62828"><b>The achieved radius is below what the search
       guaranteed</b> (${fmt(m.minR)} m against ${fmt(guarantee)} m). Every arc the lattice can
@@ -776,7 +1072,7 @@ function showResults() {
       const d = r.vp.diff[c.idx];
       const tag = Math.abs(d) < 2 ? 'okrow' : Math.abs(d) < 15 ? '' : 'warnrow';
       h += `<tr class="${tag}"><td>${c.node.name}<br>
-        <span style="color:#6b7280;font-weight:400">${fmt(c.s/1000,1)} km · ground ${fmt(r.vp.ground[c.idx])} m</span></td>
+        <span style="color:#6b7280;font-weight:400">${fmt((c.s + (r.ch0 || 0))/1000,1)} km · ground ${fmt(r.vp.ground[c.idx])} m</span></td>
         <td>${fmt(r.vp.z[c.idx])} m<br><span style="color:#6b7280">${
           Math.abs(d) < 0.5 ? 'at grade' :
           (d > 0 ? fmt(d,1) + ' m fill' : fmt(-d,1) + ' m cut')}</span></td></tr>`;
@@ -841,6 +1137,66 @@ function showResults() {
       : `Curvature costs it almost nothing — the geometry is not what limits this route.`}</p>`;
 
   $('results').innerHTML = h;
+}
+
+/* What the vertical policy achieved, what an existing design gives and what
+   it does not, and how the DEM compares with surveyed ground. Every shortfall
+   is stated — a viaduct that could not keep its clearance is a finding. */
+function policyHTML(r, std) {
+  let h = '';
+  const p = r.policy, gray = s => `<br><span style="color:#6b7280;font-weight:400">${s}</span>`;
+  if (p) {
+    h += `<h3 style="margin-top:14px">Vertical policy</h3><table class="res">`;
+    if (p.elevated)
+      h += `<tr class="${p.elevated.minClear >= p.params.clearMin - 0.1 ? 'okrow' : 'warnrow'}">
+        <td>Elevated${gray(fmt(p.elevated.km, 1) + ' km held to the policy')}</td>
+        <td>least ${fmt(p.elevated.minClear, 1)} m · mean ${fmt(p.elevated.meanClear, 1)} m
+        ${gray('rail above ground; required ≥ ' + fmt(p.params.clearMin, 1) + ' m')}</td></tr>`;
+    if (p.tunnel)
+      h += `<tr class="${p.tunnel.minCover >= p.params.depth - 0.1 ? 'okrow' : 'warnrow'}">
+        <td>Bored tunnel${gray(fmt(p.tunnel.km, 1) + ' km held to the policy')}</td>
+        <td>least ${fmt(p.tunnel.minCover, 1)} m · deepest ${fmt(p.tunnel.maxDepth)} m
+        ${gray('rail below ground / bed; required ≥ ' + fmt(p.params.depth) + ' m, bed taken ' +
+               fmt(p.params.waterDepth, 1) + ' m under water')}</td></tr>`;
+    if (p.givenKm > 0)
+      h += `<tr><td>Levels as designed${gray('fixed exactly, not fitted')}</td><td>${fmt(p.givenKm, 1)} km</td></tr>`;
+    h += `</table>`;
+    if (p.warnings && p.warnings.length)
+      h += `<p class="note" style="color:#b45309"><b>Ramps cut short:</b> ${p.warnings.join(' · ')}.
+        The policy is held only where room is left; a shortfall is measured below.</p>`;
+    if (p.boundShortKm > 0.05)
+      h += `<p class="note" style="color:#b45309"><b>${fmt(p.boundShortKm, 1)} km could not be held
+        to the policy</b> — worst ${fmt(p.boundError, 1)} m out at ${fmt(((p.boundAt || 0) + (r.ch0 || 0)) / 1000, 2)} km.
+        The ruling gradient does not leave room to climb over (or dive under) what is there;
+        the long section shows where.</p>`;
+  }
+  const g = r.givenStats;
+  if (g && g.n > 2) {
+    const grOk = g.maxGrade <= std.maxGrade * 1.02, rvOk = g.minRv >= Math.min(std.vCrestR, std.vSagR) * 0.96;
+    h += `<p class="note"><b>The existing design's levels</b> cover ${fmt(g.km, 1)} km and are kept exactly as
+      designed: steepest grade <b>${g.maxGrade.toFixed(2)} %</b> (${grOk ? 'within' : 'above'} the
+      ${std.maxGrade.toFixed(2)} % ruling gradient here), tightest vertical curve about
+      <b>${fmt(g.minRv)} m</b> (${rvOk ? 'meets' : 'below'} the ${fmt(Math.min(std.vCrestR, std.vSagR))} m
+      this standard asks for${rvOk ? '' : ' — the design was set to a different vertical rule'}).
+      Faint parts of the line on the long section are estimated by the vertical policy, not given.</p>`;
+  }
+  if (r.refSparse)
+    h += `<p class="note" style="color:#b45309"><b>Levels estimated from a few published points</b>
+      (shaft depths, a portal level) with the vertical policy between them. Treat the profile as
+      indicative: the detailed design is not public.</p>`;
+  const cal = r.calibration;
+  // the offset to build with is absolute: whatever was applied, less what remains
+  const offset = (+cal?.dem_offset || 0) - (cal ? cal.median : 0);
+  if (cal && isFinite(cal.median))
+    h += `<p class="note"><b>DEM against surveyed ground</b> (${fmt(cal.n)} points): the DEM reads
+      <b>${cal.median >= 0 ? '+' : ''}${fmt(cal.median, 2)} m</b> on the median
+      (5–95 %: ${fmt(cal.p5, 1)} to ${fmt(cal.p95, 1)} m). That is the datum offset plus the canopy
+      and buildings a surface model includes. ${Math.abs(cal.median) > 0.5
+        ? 'Rebuild with <code>--dem-offset ' + offset.toFixed(2) + '</code> to put the DEM on the design datum before comparing levels.'
+        : 'Small enough to compare levels directly.'}</p>`;
+  if (r.refNotes && r.refNotes.length)
+    h += `<p class="note"><b>About this data:</b> ${r.refNotes.map(n => String(n)).join(' · ')}</p>`;
+  return h;
 }
 
 /* ----------------------------------------------------------- COMPARISON -- */
@@ -919,12 +1275,14 @@ function bindControls() {
   document.querySelectorAll('.tabs div').forEach(d =>
     d.onclick = () => showTab(d.dataset.tab));
 
+  bind3D();
   $('runOne').onclick = runOne;
   $('runStudy').onclick = runStudy;
   $('runRef').onclick = loadReference;
   $('useDesirable').onchange = e => { cfg.useDesirable = e.target.checked; strideAuto = true; updateStandard(); };
-  $('closed').onchange = e => { cfg.closed = e.target.checked; updateStandard(); };
+  $('closed').onchange = e => { cfg.closed = e.target.checked; buildControlList(); updateStandard(); };
   $('stopAt').onchange = e => { cfg.stopAtControls = e.target.checked; };
+  $('inclRef').onchange = e => { cfg.includeReference = e.target.checked; };
   $('cpClear').onclick = () => {
     controls.length = 0; buildControlList(); map.draw(); updateStandard();
   };
@@ -969,7 +1327,7 @@ window.AD = {
   get study() { return study; },
   get map() { return map; },
   get controls() { return controls; },
-  cfg, run: runOne, options: runStudy, reference: loadReference,
+  cfg, run: runOne, options: runStudy, reference: loadReference, view3d: () => v3d,
   standard: currentStandard,
 };
 

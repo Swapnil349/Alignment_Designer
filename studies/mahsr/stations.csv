@@ -1,0 +1,13 @@
+name,lat,lon,kind,note
+Mumbai (BKC),19.0682,72.8659,terminal,"approx. - Wikipedia; on the OSM-mapped tunnel 350 m from its west end. Underground (box ~32 m deep), former MMRDA ground, BKC"
+Thane,19.19552,73.06010,station,"approx. - OSM node 'Thane Station' (railway=construction) on the OSM-mapped line, ~7 km past the Shilphata portal; elevated, Mhatardi-Dativali near Diva (Wikipedia's 19.1890 73.0594 is 416 m off the line)"
+Virar,19.4362,72.8383,station,"approx. - Wikipedia (18 m from the OSM-mapped line): Valaipada-Moregaon, Nalasopara East"
+Boisar,19.7904,72.7930,station,"approx. - Wikipedia (11 m from the OSM-mapped line): Warangade, east of Boisar"
+Vapi,20.327501,72.949181,station,"exact - design centre line at CH 167.940 (station CH 167.727-168.152, CivilWorksApp)"
+Bilimora,20.779179,73.010834,station,"exact - design centre line at CH 218.533 (station CH 218.320-218.745, CivilWorksApp)"
+Surat,21.178799,72.932252,station,"exact - design centre line at CH 264.582 (station CH 264.357-264.807, CivilWorksApp)"
+Bharuch,21.695126,72.951806,station,"exact - design centre line at CH 323.110 (station CH 322.897-323.322, CivilWorksApp)"
+Vadodara,22.310316,73.179986,station,"approx. - design centre line at CH 397.0 beside Vadodara Jn; not in the data (Wikipedia's coordinate projects to CH ~397.55, 17 m off the line)"
+Anand-Nadiad,22.6517,72.8834,station,"approx. - Wikipedia (2 m from the OSM-mapped line): Uttarsanda, between Anand and Nadiad"
+Ahmedabad,23.0250,72.6027,station,"approx. - Wikipedia (28 m from the OSM-mapped line): Kalupur, beside Ahmedabad Jn"
+Sabarmati,23.0756,72.5879,terminal,"approx. - Wikipedia (on the OSM-mapped line): Sabarmati multimodal hub, Ram Nagar"

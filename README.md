@@ -63,39 +63,58 @@ python designer/build/convert_london.py
 
 ## Using your own terrain
 
+The quickest route from nothing to a project is three commands — download the
+terrain, download the constraints, build. `studies/delhi_varanasi/README.md`
+walks through it for a real 800 km corridor; the short version:
+
 ```bash
-python designer/build/import_dem.py --dem terrain.tif --id westghats --name "West Ghats crossing"
+python designer/build/fetch_dem.py --controls stations.csv --buffer-km 30 --out raw/dem
+python designer/build/fetch_osm.py --controls stations.csv --buffer-km 30 --out raw/osm
+python designer/build/import_dem.py --dem raw/dem --controls stations.csv --buffer-km 30 --osm raw/osm --id mycorridor --name "My corridor" --mode rail_hs --speed 320
 ```
 
-Accepted DEM formats: **GeoTIFF** (Copernicus, SRTM, ALOS, NASADEM, LiDAR
-exports), **ESRI/GRASS ASCII grid** (`.asc`), **raw SRTM tiles** (`.hgt`), and
-bare NumPy arrays with `--extent`.
+`stations.csv` has named columns `name, lat, lon` (and optionally `kind`), one
+row per control point in route order.
 
-Geographic DEMs in degrees are projected to the UTM zone of their centre, because
-radii, gradients and chainages are meaningless in degrees. The projection is a
-Snyder series implemented in `dempack.py` — no pyproj, no GDAL.
+**Terrain.** `fetch_dem.py` downloads the Copernicus DEM — the most accurate free
+global DEM — with no login, from the AWS open-data archive: GLO-90 (~90 m, ~5 MB
+per 1° tile) by default, GLO-30 (~30 m, ~42 MB) with `--res 30`. `--dry-run` lists
+the tiles and sizes first; an interrupted download resumes.
 
-Constraint layers are optional GeoJSON, in WGS84 or already in the project CRS:
+`import_dem.py --dem` takes any mix of GeoTIFFs (Copernicus, SRTM, ALOS,
+CartoDEM, LiDAR exports), ESRI/GRASS ASCII grids, raw SRTM `.hgt` tiles, zips of
+those, folders and wildcards, and mosaics them one tile at a time, so a corridor
+spanning dozens of tiles fits in memory. It averages the DEM over each design
+cell rather than point-sampling it (on a surface model, point sampling turns
+rooftops into hills). Geographic DEMs are projected to the UTM zone of the
+project's centre — radii, gradients and chainages are meaningless in degrees —
+with a Snyder series in `dempack.py`: no pyproj, no GDAL.
+
+The grid's extent comes from `--clip` (metres), `--bbox` (degrees), or the
+stations plus `--buffer-km`; its cell size from `--cell`, or automatically — as
+fine as the DEM allows while staying inside the ~4.5 M cells a browser holds
+comfortably. Both choices are printed with the reason.
+
+**Constraints.** `fetch_osm.py` pulls settlements, water, major roads, railways,
+woodland and protected areas from OpenStreetMap through the public Overpass API,
+in blocks, and writes one GeoJSON per layer; `--osm FOLDER` hands them all to the
+importer. Any layer can come from a better source instead — every flag takes a
+GeoJSON in WGS84 or the project CRS, and an explicit flag beats the `--osm` file:
 
 ```bash
 python designer/build/import_dem.py --dem srtm.tif --id corridor \
-  --built settlements.geojson \
-  --protected national_parks.geojson \
-  --woodland forest.geojson \
-  --water rivers.geojson \
-  --road highways.geojson \
-  --rail railways.geojson \
-  --farmland agriculture.geojson \
-  --exclusion no_go.geojson \
-  --control "Start:73.79,19.99" --control "End:73.56,19.70" \
-  --mode rail_hs --speed 300
+  --built settlements.geojson --protected parks.geojson --woodland forest.geojson \
+  --water rivers.geojson --road highways.geojson --rail railways.geojson \
+  --farmland agriculture.geojson --exclusion no_go.geojson \
+  --control "Start:73.79,19.99" --control "End:73.56,19.70" --mode rail_hs --speed 300
 ```
+
+(`--control` takes LON first. If a point given that way lands outside the DEM
+but its swapped reading lands inside, it is read as lat,lon — Google Maps order —
+with a warning.)
 
 A DEM on its own works fine — the route is then driven by terrain alone, which
 the app says plainly rather than pretending it has constraint data it does not.
-
-Useful sources: Copernicus GLO-30, SRTM 30 m, ALOS World 3D, national LiDAR
-programmes; OpenStreetMap extracts via Overpass or Geofabrik for the vectors.
 
 ---
 
@@ -144,6 +163,63 @@ tied: a platform sits at the design level, on embankment or in cutting, and
 forcing seventeen of them onto existing ground collapsed the vertical radius from
 67 km to 208 m on the London circuit. Their cut and fill is reported instead.
 
+**Vertical policy.** Rail modes carry a *vertical policy*. **Follow the
+ground** is the default: earthworks, with structures where the cut or fill gets
+deep. **Elevated by default** is Indian high-speed practice: MAHSR is about 90 %
+viaduct even on the plain. Elevated rail stays at least a minimum height above
+ground and aims at a typical one. The defaults (8 m and 11.5 m) are calibrated
+on 1,531 surveyed MAHSR piers, which measure 8.1 m at the least and 11.75 m at
+the median.
+
+Any leg can be a **bored tunnel**: rail at least *d* m below the ground or the
+creek bed. The DEM has no bathymetry, so the bed depth below the water surface
+is a stated parameter. A tunnel follows the straight grade between its ends,
+pulled down only where cover demands it, which is why it dives under a creek
+and does not climb into a hill. Each control point can also fix a rail level or
+a depth (an underground station, a portal). A change of policy gets a ramp long
+enough for the gradient and the vertical curves.
+
+The policy enters the fitter as bounds on the same convex projection. They are
+rounded by crest and sag parabolas of the standard radius, so the profile can
+rest on them without corners. Any stretch that cannot be held to the policy is
+reported in metres and kilometres. A study with tunnel legs adds two options:
+*Tunnel deeper (+15 m cover)* and *Viaduct instead of tunnel*. A bored leg pays
+only 12 % of the surface constraint weights in the search, since it passes
+under the town and the creek.
+
+**Comparing with an existing design.** A project can carry the line already
+being built as its *reference*. That can include the given rail levels (fixed
+exactly, never fitted), sparse published levels (pinned, with the policy
+between), the declared structures, and surveyed ground. The reference is
+evaluated under the same standard and rates as the options, and ranked with
+them unless that is switched off. Its rail level is drawn dashed under every
+option's long section wherever the two lines are within 300 m. Surveyed ground
+is drawn against the DEM, and the DEM's measured offset is reported.
+`studies/mahsr/` builds two such references: MAHSR C-4, with the S5 levels,
+from CivilWorksApp; and BKC – Thane, from OpenStreetMap and published depths.
+
+**3D view.** The **3D** button on the map toolbar opens a block model of the
+corridor:
+
+- the terrain around the line, lit and coloured, with the constraint layers
+  draped over it;
+- the selected alignment at its *design* level, coloured by structure, with
+  piers under viaducts;
+- tunnels drawn dashed through the ground, or seen through it in *x-ray*;
+- the other options beside it.
+
+Vertical exaggeration runs from 1× (true) to 20×. Hover is shared with the map
+and the long section, and clicking the line moves the section there. It is
+plain WebGL with no library (`js/view3d.js`). The block is up to ~400 k
+vertices, and the hillshade comes from a full-resolution texture, so it stays
+sharp on long corridors. It is display only: nothing in it feeds a result.
+
+**Long section and map.** The long section zooms (wheel, ± buttons) and
+scrolls (drag, scrollbar). Its vertical exaggeration can be fixed (1×–100×),
+and it says when levels run off the plot. Right-click an alignment on the map
+to select that option; where lines overlap, right-click again to cycle. The
+unselected options fade back.
+
 **Where a control point cannot be reached** at the mainline radius — a station set
 well off the corridor, with hard turns either side — the leg is re-routed at a
 reduced local radius and the relaxation is reported, with the line speed it
@@ -186,11 +262,18 @@ These are stated because a corridor tool that hides them is worse than useless.
   exposed and editable in the app. They rank alternatives against each other.
   They are not an estimate, and no figure should leave the room before a local
   rate build-up replaces them.
-* **The search is near-optimal, not provably optimal.** The heuristic is
-  calibrated on the corridor's own cost surface rather than on a global lower
-  bound; without that it degenerates into Dijkstra and takes 86 s where it now
-  takes 11. The radius constraint is unaffected — that is structural, and no
-  heuristic can weaken it.
+* **The search is near-optimal, not provably optimal.** Its heuristic combines
+  a 2-D cost-to-go computed outward from each station (so it knows a station
+  sits inside a town) with the minimum turning any path must make. It is not
+  guaranteed consistent and closed states are not reopened, so no hard
+  optimality bound is claimed. Each leg is searched unweighted first; where
+  that runs out of budget — typically a leg ending deep inside a large town,
+  where costs are ~60× open ground — it falls back to weighted A* (ε 1.2, then
+  1.6), and the Results tab reports the ε used (*Search mode*). On one measured
+  leg ε 1.6 cost ~10 % more than ε 1.2. A search that runs out of budget is
+  reported as such, never mistaken for a radius that does not fit. The radius
+  constraint itself is unaffected — that is structural, and no heuristic can
+  weaken it.
 * **Horizontal and vertical are solved in sequence, not together.** The search
   picks the corridor using a terrain-response proxy — the gradient along the
   direction of travel and the undulation a stiff profile cannot follow — and the
@@ -211,6 +294,27 @@ These are stated because a corridor tool that hides them is worse than useless.
 * **Structure thresholds** (when fill becomes viaduct, when cut becomes tunnel)
   are rate-driven simplifications of a decision that in reality involves ground
   conditions, ventilation and consent.
+* **The fitted profile has too many grade changes for a high-speed line.** It
+  follows the ground (or ground plus clearance) within the curve and gradient
+  limits. Real HSR practice holds long constant grades, with change points ≥ 2 km
+  apart on MAHSR. On Delhi – Agra the elevated fit has about 347 grade changes in
+  206 km. Compare earthworks, clearances and structures, not the VIP count, until
+  a grade-line fit exists.
+* **Vertical curves at fixed levels.** The fitter is local. On steep ground a
+  fixed level (an end tie, a fixed station level) can leave a vertical curve
+  tighter than the standard right beside it. The Results tab shows the radius
+  achieved.
+* **A DEM has no creek bed and is a surface model.** Tunnel cover under water
+  uses an assumed bed depth. Copernicus heights include canopy and buildings and
+  sit on EGM2008, not the project datum. The reference import measures the
+  offset against surveyed ground where it has some; use `--dem-offset`.
+* **Coastal regulation zone is a proxy** unless an authoritative CZMP layer is
+  given: a buffer of the OSM coastline plus mangrove buffers.
+* **The 3-D view is a picture, not a model.** The terrain mesh is
+  downsampled, to about 300 m facets on the 412 km London loop. Cuttings are
+  not carved: they are drawn at the ground surface as trenches. The other
+  options are drawn as lines, and picking works on the selected line only.
+  Panning drifts slightly at low angles. Nothing in it feeds a result.
 
 ---
 
@@ -227,12 +331,22 @@ designer/                      the generic tool
   js/study.js                  option generation, ranking, reference evaluation
   js/render.js                 map, terrain basemap, thematic views, charts
   js/export.js                 DXF, LandXML, CSV, GeoJSON, PNG
+  js/view3d.js                 WebGL 3-D block model of the corridor (no library)
+  view3d_test.html             standalone page for the 3-D view (?project=<id>)
   js/app.js                    wiring
   build/dempack.py             DEM readers, UTM, rasterisation, packing
   build/import_dem.py          import your own terrain and constraints
   build/make_demo.py           synthetic demonstration project
   build/convert_london.py      carry the London study over, with its settled loop
+  build/fetch_dem.py           download Copernicus DEM tiles for a corridor
+  build/fetch_osm.py           download OpenStreetMap constraint layers
   projects/                    packed projects + index.json
+studies/
+  delhi_varanasi/              stations + runbook for the Delhi – Varanasi HSR study
+  mahsr/                       Mumbai – Ahmedabad HSR: DEM tile lists, stations, the
+                               existing design as references (C-4 from CivilWorksApp,
+                               kept out of git in private/; BKC – Thane from public data)
+docs/feature_benchmark.md      Trimble Quantm and similar tools vs this one
 london2100/
   v12/                         delivery build: app, data/, outputs/ (Sep 2026)
   v11/                         previous build, with build/ (Python pipeline)

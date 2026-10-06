@@ -127,6 +127,9 @@ const DEFAULT_WEIGHTS = {
   rail:          5,
   farmland:      8,
   greenbelt:    -2,   // negative = mild preference
+  mangrove:     60,   // CRZ-IA: felling needs court and CZMA leave (MAHSR: 22,000 trees, 2022)
+  wetland:      25,   // marsh, mudflat, saltmarsh — Ramsar sites belong in protected
+  crz:          10,   // coastal regulation zone (proxy unless an authoritative layer is given)
   exclusion:  4000,   // hard no-go: effectively a wall, not a penalty
   slope:         9,   // per % of point ground slope (earthworks proxy)
   turn:         55,   // per bucket of direction change (transition curves)
@@ -139,7 +142,7 @@ const DEFAULT_WEIGHTS = {
    coverage × weight. Everything else is handled specially. */
 const COVERAGE_KEYS = ['built', 'protected', 'woodland', 'flood', 'water_body',
                        'river_major', 'road_major', 'rail', 'farmland',
-                       'greenbelt', 'exclusion'];
+                       'greenbelt', 'mangrove', 'wetland', 'crz', 'exclusion'];
 
 /** Layers the loaded project can actually be weighted on. */
 function activeCostLayers() {
@@ -320,6 +323,139 @@ function stepTerrainCost(x, y, th, dth, L, w, TF) {
      exitToward   {E,N} of the control point AFTER b. The leg may only finish on
                   a heading within exitCone of the turn bisector, so it arrives
                   already pointing the right way for the next leg.            */
+/* 2-D cost-to-go from the goal, on a coarse lattice over the search box.
+
+   The heading-blind straight-line heuristic fails worst exactly where a
+   corridor study needs it most: stations sit INSIDE towns. Arriving at a city
+   station means crossing kilometres of built-up land at ~60× the open-ground
+   cost, and a heuristic that assumes 1× there makes A* exhaust every cheaper
+   alternative in the band before it will enter the town — a synthetic leg
+   into a built-up block used up a 1.5 M-state budget and returned nothing.
+
+   So: compute the 2-D cost-to-go over the search box at grid resolution
+   (raster sweeping, below) and read it by bilinear interpolation between cell
+   centres. It knows the city is there, and it ignores heading and curvature,
+   so it never charges for those.
+
+   It is not scaled down to be strictly admissible, deliberately. A 16-
+   direction stencil can over-measure a path by at most 2.6 % (8-direction:
+   8.2 %). Scaling by 0.92 to compensate was tried: on a leg whose cost is
+   dominated by 10 km of town, 8 % of that is ~50 km of slack, and the search
+   spent it wandering over every cheap field in the band. */
+let _ctgCache = { key: '', val: null };
+function costToGo(CG, X0, Y0, X1, Y1, hRes, goal, goalR) {
+  const GNX = G.nx, GNY = G.ny, GC = G.cell, GX0 = G.xmin, GY1 = G.ymax;
+  /* Resolution: the search's own. A step samples cost four times along its
+     arc, so features thinner than a quarter-stride are only seen by the
+     search part of the time anyway; resolving them finer in the heuristic
+     buys nothing and cost 12 s on a 50 m grid. A quarter-stride lattice keeps
+     the river, road and rail crossings a coarser (half-stride) one erased —
+     min-pooled, so it stays a lower bound — and never exceeds ~1.5 M cells. */
+  const area = Math.max(1, (X1 - X0) * (Y1 - Y0));
+  const res = Math.max(GC, hRes, Math.sqrt(area / 1.5e6));
+  const key = [G.id, CG.length, _costCache.sig, X0, Y0, X1, Y1, res, goal.E, goal.N, goalR].join('|');
+  if (_ctgCache.key === key) return _ctgCache.val;
+  const W = Math.max(2, Math.ceil((X1 - X0) / res)), H = Math.max(2, Math.ceil((Y1 - Y0) / res));
+  const cc = new Float32Array(W * H);
+  for (let cy = 0; cy < H; cy++) {
+    const n0 = Y0 + cy * res, n1 = n0 + res;
+    const fy0 = Math.max(0, Math.floor((GY1 - n1) / GC)), fy1 = Math.min(GNY - 1, Math.floor((GY1 - n0) / GC - 1e-9));
+    for (let cx = 0; cx < W; cx++) {
+      const e0 = X0 + cx * res, e1 = e0 + res;
+      const fx0 = Math.max(0, Math.floor((e0 - GX0) / GC)), fx1 = Math.min(GNX - 1, Math.floor((e1 - GX0) / GC - 1e-9));
+      let m = 1e6;
+      for (let fy = fy0; fy <= fy1; fy++) {
+        const o = fy * GNX;
+        for (let fx = fx0; fx <= fx1; fx++) if (CG[o + fx] < m) m = CG[o + fx];
+      }
+      cc[cy * W + cx] = m;
+    }
+  }
+  const dist = new Float64Array(W * H).fill(Infinity);
+  /* Seed the whole ARRIVAL zone, not one cell. The search counts a leg as
+     arrived anywhere within goalR of the point, and a single goal cell's
+     centre can sit half a cell off the point; inside a town, at ~60× open-
+     ground cost, those few hundred metres were worth 25–75 km-equivalent of
+     OVER-estimate. An over-estimate is the one error a heuristic must not
+     make: it steered the search away from the true approach and produced a
+     137 km route for a 104 km leg. */
+  const seedR = (goalR || 0) + res * Math.SQRT1_2;
+  const gx = Math.floor((goal.E - X0) / res), gy = Math.floor((goal.N - Y0) / res);
+  const rx = Math.ceil(seedR / res) + 1;
+  for (let yy = Math.max(0, gy - rx); yy <= Math.min(H - 1, gy + rx); yy++)
+    for (let xx = Math.max(0, gx - rx); xx <= Math.min(W - 1, gx + rx); xx++)
+      if (Math.hypot(X0 + (xx + 0.5) * res - goal.E, Y0 + (yy + 0.5) * res - goal.N) <= seedR)
+        dist[yy * W + xx] = 0;
+
+  /* Weighted distance by raster sweeping (a chamfer / fast-sweeping
+     transform): alternate forward and backward passes, each relaxing a cell
+     from its 8 already-visited neighbours of the 16-direction stencil, until a
+     pass changes nothing. Same answer as Dijkstra on this stencil, as flat
+     array arithmetic: the grid is padded by two cells so no neighbour needs a
+     bounds check.
+     A diagonal or knight step is charged the CHEAPER of the two cells it
+     slips between, so a one-cell river drawn diagonally cannot be crossed for
+     free at a corner, yet a path running along a town's edge is not charged
+     the town. The 16-direction stencil over-measures a path by at most 2.6 %. */
+  const Wp = W + 4, Hp = H + 4;
+  const cp = new Float32Array(Wp * Hp).fill(1e6);
+  const dp = new Float64Array(Wp * Hp).fill(Infinity);
+  for (let y = 0; y < H; y++) {
+    const o = (y + 2) * Wp + 2;
+    for (let x = 0; x < W; x++) { cp[o + x] = cc[y * W + x]; dp[o + x] = dist[y * W + x]; }
+  }
+  const F = [[-1,0],[-1,-1],[0,-1],[1,-1],[-2,-1],[-1,-2],[1,-2],[2,-1]];
+  const mk = sgn => {
+    const off = new Int32Array(8), m1 = new Int32Array(8), m2 = new Int32Array(8);
+    const len = new Float64Array(8), diag = new Uint8Array(8);
+    F.forEach(([dx, dy], k) => {
+      dx *= sgn; dy *= sgn;
+      off[k] = dy * Wp + dx; len[k] = Math.hypot(dx, dy) * res;
+      if (Math.abs(dx) === 1 && Math.abs(dy) === 1) { m1[k] = dx; m2[k] = dy * Wp; diag[k] = 1; }
+      else if (Math.abs(dx) === 2) { m1[k] = Math.sign(dx); m2[k] = Math.sign(dx) + dy * Wp; diag[k] = 1; }
+      else if (Math.abs(dy) === 2) { m1[k] = Math.sign(dy) * Wp; m2[k] = dx + Math.sign(dy) * Wp; diag[k] = 1; }
+    });
+    return { off, m1, m2, len, diag };
+  };
+  const FW = mk(1), BW = mk(-1);
+  const pass = (S, fwd) => {
+    const { off, m1, m2, len, diag } = S;
+    let changed = 0;
+    for (let yy = 0; yy < H; yy++) {
+      const y = fwd ? yy + 2 : H + 1 - yy;
+      let i = y * Wp + (fwd ? 2 : W + 1);
+      for (let xx = 0; xx < W; xx++, i += fwd ? 1 : -1) {
+        let best = dp[i];
+        const ci = cp[i];
+        for (let k = 0; k < 8; k++) {
+          const n = i + off[k], dn = dp[n];
+          if (dn >= best) continue;            // costs are positive: cannot improve
+          let c = ci + cp[n];
+          if (diag[k]) {
+            const a2 = cp[i + m1[k]], b2 = cp[i + m2[k]];
+            c = (c + 2 * (a2 < b2 ? a2 : b2)) * 0.5;
+          }
+          const nd = dn + len[k] * 0.5 * c;
+          if (nd < best) best = nd;
+        }
+        if (best < dp[i]) { dp[i] = best; changed++; }
+      }
+    }
+    return changed;
+  };
+  for (let it = 0; it < 24; it++) {
+    const ch = pass(FW, true) + pass(BW, false);
+    if (!ch) break;
+  }
+  for (let y = 0; y < H; y++) {
+    const o = (y + 2) * Wp + 2;
+    for (let x = 0; x < W; x++) dist[y * W + x] = dp[o + x];
+  }
+  const val = { W, H, dist, cc, X0, Y0, hRes: res };
+  _ctgCache = { key, val };
+  return val;
+}
+
 /* Dense arrays cost 16 bytes per state (g, cameFrom, x, y). The cap is a memory
    budget, not a taste: 9M states is ~145 MB, which a browser tab survives. */
 const STATE_CAP = 9e6;
@@ -413,9 +549,72 @@ function search(a, b, w, onProgress, opt) {
       probes.push(base + terr);
     }
     probes.sort((p, q) => p - q);
-    hCost = Math.max(0.9, probes[Math.floor(probes.length * 0.30)] * 0.80);
+    /* The cheapest cell anywhere in the search box is a true lower bound on
+       the cost of a metre — terrain and turn penalties only ever add — so
+       minCell × distance is an ADMISSIBLE heuristic, and on open ground it is
+       usually 1.0. The previous fixed floor of 0.9 left a 10 % gap there, and on
+       a flat plain a 10 % gap is ruinous: A* expands every state with
+       g + 0.9·h below the optimum, which near the start is a disc 1.1 legs
+       wide, times 216 headings. A 100 km leg across the Gangetic plain used up
+       a 6 M-state budget and came back "infeasible" at a radius it could
+       easily have met. */
+    let minCell = Infinity;
+    {
+      const ix0 = Math.max(0, Math.floor((X0 - GX0) / GC)), ix1 = Math.min(GNX - 1, Math.floor((X1 - GX0) / GC));
+      const iy0 = Math.max(0, Math.floor((GY1 - Y1) / GC)), iy1 = Math.min(GNY - 1, Math.floor((GY1 - Y0) / GC));
+      for (let iy = iy0; iy <= iy1; iy++) {
+        const o = iy * GNX;
+        for (let ix = ix0; ix <= ix1; ix++) if (CG[o + ix] < minCell) minCell = CG[o + ix];
+      }
+      if (!isFinite(minCell)) minCell = 0.05;
+    }
+    hCost = Math.max(minCell, probes[Math.floor(probes.length * 0.30)] * 0.80);
   }
-  const heur = (x, y) => Math.hypot(b.E - x, b.N - y) * hCost;
+  /* Heading-aware heuristic. A state is (cell, heading, last turn) — 216
+     states per cell — and a pure-distance heuristic scores a train pointing
+     sideways exactly like one pointing at the goal, so A* expands every
+     heading at every cell inside the search band. But any path must turn its
+     heading at least to the bearing of the goal (the mean direction of a path
+     is the direction of its chord, so its range of headings must reach that
+     bearing), and every bucket turned is charged the curvature penalty. That
+     minimum turning cost is a second admissible term, and it prunes the
+     wrong-way states outright. Measured on a 104 km leg across open ground:
+     1 002 expansions, where the distance-only heuristic needed 15 260. */
+  /* ε: weighted A*. ε > 1 inflates the heuristic, trading optimality for far
+     fewer expansions. NO hard bound is claimed for either setting: the
+     heuristic is not guaranteed consistent (the stencil can over-measure by
+     2.6 %, the corridor-probe term is calibrated rather than admissible) and
+     closed states are not reopened. Measured on Delhi – Agra, Jewar → Mathura:
+     ε 1.0 cost 361.6, ε 1.2 cost 355.1, ε 1.6 cost 391.9 (km-equivalent) — so
+     ε 1.0 is near-optimal, not exact, and ε 1.6 can cost ~10 % more. Chosen per
+     leg by routeLeg, lowest first, and reported. */
+  const eps = opt.epsilon || 1;
+  const turnPerBucket = (w.turn || 0) * stride * 0.01;
+  const goalTol = stride * 0.5;
+  const C2 = costToGo(CG, X0, Y0, X1, Y1, stride / 4, b, goalTol);
+  const heur = (x, y, h) => {
+    const gx = b.E - x, gy = b.N - y;
+    const d = Math.hypot(gx, gy);
+    let v = d * hCost;
+    // bilinear between the four surrounding cell centres
+    const fx = (x - C2.X0) / C2.hRes - 0.5, fy = (y - C2.Y0) / C2.hRes - 0.5;
+    const x0 = Math.max(0, Math.min(C2.W - 2, Math.floor(fx)));
+    const y0 = Math.max(0, Math.min(C2.H - 2, Math.floor(fy)));
+    const tx = Math.max(0, Math.min(1, fx - x0)), ty = Math.max(0, Math.min(1, fy - y0));
+    const D = C2.dist, Wc = C2.W;
+    if (C2.W > 1 && C2.H > 1) {
+      const v2 = (D[y0*Wc + x0] * (1-tx) + D[y0*Wc + x0+1] * tx) * (1-ty)
+               + (D[(y0+1)*Wc + x0] * (1-tx) + D[(y0+1)*Wc + x0+1] * tx) * ty;
+      if (v2 > v && isFinite(v2)) v = v2;
+    }
+    if (turnPerBucket > 0 && d > goalTol) {
+      let dth = Math.atan2(gy, gx) - h * DB;
+      dth = Math.abs(((dth % (2 * Math.PI)) + 3 * Math.PI) % (2 * Math.PI) - Math.PI);
+      const need = Math.ceil((dth - Math.asin(Math.min(1, goalTol / d))) / DB - 1e-9);
+      if (need > 0) v += need * turnPerBucket;
+    }
+    return v;
+  };
 
   const heap = { k: [], v: [] };
   function push(pri, st) {
@@ -440,7 +639,7 @@ function search(a, b, w, onProgress, opt) {
   if (opt.seedHeading !== undefined && opt.seedHeading !== null) {
     const h = ((opt.seedHeading % NH) + NH) % NH;
     const s = key(a.E, a.N, h, 1);
-    if (s >= 0) { gS[s] = 0; stateX[s] = a.E; stateY[s] = a.N; push(heur(a.E, a.N), s); }
+    if (s >= 0) { gS[s] = 0; stateX[s] = a.E; stateY[s] = a.N; push(eps * heur(a.E, a.N, h), s); }
   } else {
     for (let h = 0; h < NH; h++) {
       const d = Math.abs(((h * DB - bearing + Math.PI * 3) % (2 * Math.PI)) - Math.PI);
@@ -448,7 +647,7 @@ function search(a, b, w, onProgress, opt) {
       const s = key(a.E, a.N, h, 1);
       if (s < 0) continue;
       gS[s] = 0; stateX[s] = a.E; stateY[s] = a.N;
-      push(heur(a.E, a.N), s);
+      push(eps * heur(a.E, a.N, h), s);
     }
   }
 
@@ -508,7 +707,7 @@ function search(a, b, w, onProgress, opt) {
   const terrScale = stride * 0.01;
 
   const goalR = stride * 0.5;
-  let best = -1, expanded = 0;
+  let best = -1, expanded = 0, capped = false;
   const cap = opt.expandCap || 6e6;
 
   while (heap.v.length) {
@@ -517,7 +716,7 @@ function search(a, b, w, onProgress, opt) {
     closed[s] = 1;
     const x = stateX[s], y = stateY[s];
     const h = Math.floor(s / NT) % NH, lt = s % NT;
-    if (++expanded > cap) break;
+    if (++expanded > cap) { capped = true; break; }
     if (Math.hypot(b.E - x, b.N - y) < goalR && headingOK(h)) { best = s; break; }
     const gc = gS[s];
     if (onProgress && (expanded & 16383) === 0) onProgress(expanded);
@@ -547,12 +746,16 @@ function search(a, b, w, onProgress, opt) {
       const ng = gc + step;
       if (ng < gS[s2]) {
         gS[s2] = ng; cameFrom[s2] = s; stateX[s2] = nx2; stateY[s2] = ny2;
-        push(ng + heur(nx2, ny2), s2);
+        push(ng + eps * heur(nx2, ny2, A.h2), s2);
       }
     }
   }
 
-  if (best < 0) return null;
+  /* Running out of budget is not the same as finding no route. A capped
+     search says nothing about the geometry, and must never be read as "this
+     radius does not fit" — that is how a straight leg once got a station-
+     throat relaxation it did not need. */
+  if (best < 0) return capped ? { capped: true, expanded, stride, epsilon: eps } : null;
 
   /* Walk back collecting states, then REGENERATE each arc. Storing only the arc
      endpoints and joining them with straight lines would inject corners the
@@ -581,7 +784,7 @@ function search(a, b, w, onProgress, opt) {
      proposed and destroys the radius guarantee. The alignment ends where the
      geometry arrives; the residual offset is reported. */
   const end = pts[pts.length - 1];
-  return { pts, expanded, rAchievable, maxBuckets, stride, states: chain.length,
+  return { pts, expanded, rAchievable, maxBuckets, stride, epsilon: eps, cost: gS[best], states: chain.length,
            endGap: Math.hypot(end.E - b.E, end.N - b.N),
            endHeading: chain[chain.length - 1].h };
 }
@@ -662,18 +865,54 @@ function routeLeg(a, b, c, d, seed, w, opt) {
   if (c) opts.push({ seedHeading: seed, exitToward: c, exitCone: 1.05 });
   opts.push({ seedHeading: seed });
   const direct = Math.hypot(b.E - a.E, b.N - a.N);
-  let bestSr = null, bestL = Infinity;
-  for (const o of opts) {
-    const cand = search(a, {E:b.E,N:b.N}, w, null, Object.assign({}, opt, o));
-    if (!cand) continue;
-    let Lp = 0;
-    for (let i = 1; i < cand.pts.length; i++)
-      Lp += Math.hypot(cand.pts[i].E-cand.pts[i-1].E, cand.pts[i].N-cand.pts[i-1].N);
-    if (Lp < bestL) { bestL = Lp; bestSr = cand; }
-    if (Lp < direct*1.6 + 8000) return cand;
+  let bestSr = null, bestL = Infinity, capped = false;
+  /* One rung: ε = 1 first; only if that runs out of budget, weighted searches.
+     Budgets are generous because expansions are cheap (~1 µs): on Jewar →
+     Mathura, tighter budgets pushed the leg to ε 1.6 and a route ~10 % costlier
+     than ε 1.2 finds in 3 M expansions. A null at any step means the heap
+     emptied — genuinely no route at this radius — and ends the rung at once;
+     only budget exhaustion escalates. Costs vary 60× between open fields and
+     towns, and a station inside a town makes the exact search spend its
+     whole budget on the fields. Measured on a 104 km leg into a town: ε = 1
+     exhausted 1.5 M states; ε = 1.2 found the same 109 km route in 6 431. */
+  const solve = (ww, o) => {
+    for (const [eps, cap] of [[1.0, 4e6], [1.2, 6e6], [1.6, 8e6]]) {
+      const cand = search(a, {E:b.E,N:b.N}, ww, null,
+                          Object.assign({}, opt, o, { epsilon: eps, expandCap: cap }));
+      if (!cand || !cand.capped) return cand;
+    }
+    return { capped: true };
+  };
+  const ladder = (ww) => {
+    for (const o of opts) {
+      const cand = solve(ww, o);
+      if (!cand) continue;
+      if (cand.capped) { capped = true; continue; }
+      let Lp = 0;
+      for (let i = 1; i < cand.pts.length; i++)
+        Lp += Math.hypot(cand.pts[i].E-cand.pts[i-1].E, cand.pts[i].N-cand.pts[i-1].N);
+      if (Lp < bestL) { bestL = Lp; bestSr = cand; }
+      if (Lp < direct*1.6 + 8000) return cand;
+    }
+    return null;
+  };
+  let got = ladder(w);
+  if (got) return got;
+  /* Every rung ran out of budget: search the same radius on a coarser lattice
+     (fewer, longer steps — the radius guarantee is unaffected) before
+     concluding anything about the geometry. */
+  if (!bestSr && capped) {
+    capped = false;
+    got = ladder(Object.assign({}, w, { stride: (w.stride || 500) * 1.6 }));
+    if (got) return got;
   }
-  if (bestSr) return bestSr;
+  // Budget exhaustion alone is no evidence the geometry fails: do not relax.
+  if (!bestSr && capped) return { capped: true };
 
+  /* Station-throat relaxation — tried whenever the mainline radius produced no
+     acceptable route: none at all, or only balloons. A 113 km loop to cover a
+     14 km leg is not a route at the mainline radius; it is evidence that the
+     mainline radius does not fit there. */
   /* Station-throat relaxation.
      Some control points cannot be reached at the mainline radius at all — a
      station set well off the corridor, with the legs either side of it turning
@@ -683,14 +922,30 @@ function routeLeg(a, b, c, d, seed, w, opt) {
      radius and TAG it: the relaxation is reported, the speed profile picks up
      the tighter curve automatically, and the radius audit measures against the
      relaxed guarantee. The one thing it must never do is happen silently. */
+  /* The balloon guard applies here too. It once did not, and a relaxed Luton →
+     P2 leg came back 184.9 km long for 14.2 km of direct distance — accepted
+     because it was the first relaxed route found, and it made the whole London
+     circuit 105 km longer. A relaxed route that balloons falls through to the
+     next, tighter rung; the least-bad one is kept only if every rung balloons. */
+  let bestRelaxed = null, bestRelaxedL = Infinity;
   for (const f of [0.7, 0.5, 0.35]) {
     const wl = Object.assign({}, w, { rMin: w.rMin * f, stride: Math.max(50, w.stride * f) });
     for (const o of opts) {
-      const cand = search(a, {E:b.E,N:b.N}, wl, null, Object.assign({}, opt, o));
-      if (cand) { cand.relaxed = f; cand.relaxedR = wl.rMin; return cand; }
+      const cand = solve(wl, o);
+      if (!cand || cand.capped) continue;
+      cand.relaxed = f; cand.relaxedR = wl.rMin;
+      let Lp = 0;
+      for (let i = 1; i < cand.pts.length; i++)
+        Lp += Math.hypot(cand.pts[i].E-cand.pts[i-1].E, cand.pts[i].N-cand.pts[i-1].N);
+      if (Lp < direct*1.6 + 8000) return cand;
+      if (Lp < bestRelaxedL) { bestRelaxedL = Lp; bestRelaxed = cand; }
     }
   }
-  return null;
+  /* Every rung, mainline and relaxed, ballooned or failed: keep the shortest
+     route found at all, mainline preferred on a tie. It is reported as found,
+     and the leg table shows its length against the direct distance. */
+  if (bestSr && (!bestRelaxed || bestL <= bestRelaxedL)) return bestSr;
+  return bestRelaxed;
 }
 
 /**
@@ -727,7 +982,14 @@ function searchChain(nodes, w, onProgress, opt) {
       const d = seq[k+3] || (closed ? seq[Math.min(2, seq.length-1)] : null);
       if (onProgress)
         onProgress(pass, passes, k, seq.length-1, `${seq[k].name} → ${b.name}`);
-      const sr = routeLeg(startAt, b, c, d, h, w, opt);
+      /* A leg can carry its own weights: a bored tunnel passes UNDER the town,
+         the creek and the sanctuary, so what lies on the surface costs it very
+         little — the search must not route a tunnel around a city it would
+         never have touched. opt.legWeights(k) supplies them, or null. */
+      const wk = (opt.legWeights && opt.legWeights(k % nodes.length)) || w;
+      const sr = routeLeg(startAt, b, c, d, h, wk, opt);
+      if (sr && sr.capped) return { error: 'search budget exhausted',
+                                    leg: `${seq[k].name} → ${b.name}`, legIndex: k, pass };
       if (!sr) return { error: 'no heading-continuous route',
                         leg: `${seq[k].name} → ${b.name}`, legIndex: k, pass };
       sr.from = seq[k]; sr.to = b;
@@ -749,6 +1011,7 @@ function searchChain(nodes, w, onProgress, opt) {
                                       R: Math.round(l.rAchievable) })),
             expanded: legs.reduce((s,l)=>s+l.expanded,0),
             stride: Math.max.apply(null, legs.map(l => l.stride)),
+            epsilon: Math.max.apply(null, legs.map(l => l.epsilon || 1)),
             rAchievable: rGuar, maxBuckets: legs[0].maxBuckets,
             endGap: legs[legs.length-1].endGap,
             states: legs.reduce((s,l)=>s+l.states,0) };
@@ -813,10 +1076,12 @@ function gaussSmooth(a, sigmaSamples) {
   return out;
 }
 
-/** Tightest crest and sag radii present in a profile: Rv = ds²/|z''|. */
-function verticalRadii(z, ds) {
+/** Tightest crest and sag radii present in a profile: Rv = ds²/|z''|.
+    skip(i), if given, leaves sample i out (an existing design's own curves). */
+function verticalRadii(z, ds, skip) {
   let crest = 0, sag = 0;                        // max |z''| of each sign
   for (let i = 1; i < z.length - 1; i++) {
+    if (skip && skip(i)) continue;
     const c = z[i-1] - 2*z[i] + z[i+1];
     if (c < 0) { if (-c > crest) crest = -c; }
     else if (c > sag) sag = c;
@@ -853,12 +1118,21 @@ function clampGrade(z, ds, maxGradePct) {
    relaxation. That does converge in theory, but diffusion travels like √iters,
    so a 250 m descent at 2.5 % — 400 samples — needed on the order of 160 000
    iterations and simply never arrived. */
-function clampGradePinned(z, ds, maxGradePct, pins) {
+/* `bounds` ({lo, hi}, per-sample arrays, ±Infinity where free) carries the
+   vertical POLICY: rail at least so far above ground on a viaduct, at least so
+   far below the ground or the creek bed in a tunnel, or exactly a given design
+   level. A bound is a box constraint — convex like the rest — and goes into the
+   same envelopes as a pin, so its consequence also arrives in O(n): a tunnel
+   that must be 30 m under the creek starts its descent exactly as far back as
+   the ruling gradient requires. Two bounds the gradient cannot reconcile leave
+   lo > hi; the clamp then honours the upper one and the caller reports the
+   shortfall rather than hiding it. */
+function clampGradePinned(z, ds, maxGradePct, pins, bounds) {
   const n = z.length, lim = maxGradePct / 100 * ds;
-  if (!pins || !pins.length) return clampGrade(z, ds, maxGradePct);
-  const hi = new Float64Array(n).fill(Infinity);
-  const lo = new Float64Array(n).fill(-Infinity);
-  for (const p of pins) {
+  if ((!pins || !pins.length) && !bounds) return clampGrade(z, ds, maxGradePct);
+  const hi = bounds ? Float64Array.from(bounds.hi) : new Float64Array(n).fill(Infinity);
+  const lo = bounds ? Float64Array.from(bounds.lo) : new Float64Array(n).fill(-Infinity);
+  for (const p of (pins || [])) {
     if (p.z < hi[p.i]) hi[p.i] = p.z;
     if (p.z > lo[p.i]) lo[p.i] = p.z;
   }
@@ -877,6 +1151,15 @@ function clampGradePinned(z, ds, maxGradePct, pins) {
       else if (z[i] < lo[i]) z[i] = lo[i];
     }
     clampGrade(z, ds, maxGradePct);
+  }
+  if (bounds) {
+    /* Where lo > hi (two requirements the gradient cannot reconcile) the
+       upper one wins outright — it is where a given level or a tunnel's cover
+       sits. The else-if form below lands on lo whenever z starts under both,
+       which over-rode given levels; it is kept for the classic fit, which
+       must not change. */
+    for (let i = 0; i < n; i++) z[i] = Math.min(Math.max(z[i], lo[i]), hi[i]);
+    return z;
   }
   for (let i = 0; i < n; i++) {
     if (z[i] > hi[i]) z[i] = hi[i];
@@ -915,12 +1198,20 @@ function clampGradePinned(z, ds, maxGradePct, pins) {
    simply cannot be made compliant, so the tool always returns something and
    reports the shortfall rather than looping.
 --------------------------------------------------------------------------- */
+/* opt.policy (from policyFor) changes WHAT the profile stays close to and
+   adds bounds: it is still the same projection, only the seed is the policy's
+   target level (ground + typical viaduct clearance, a tunnel line under the
+   ground) instead of the ground, and the box bounds join the gradient
+   envelopes. With no policy the code path is exactly the ground-following fit
+   it always was — the validation anchors depend on that. */
 function verticalProfile(P, w, opt) {
   opt = opt || {};
   const n = P.length;
   const ds = n > 1 ? (P[n-1].s - P[0].s) / (n - 1) : 1;
-  const ground = new Float64Array(n);
-  for (let i = 0; i < n; i++) ground[i] = sampleBilinear('dem', P[i].E, P[i].N);
+  const ground = opt.ground || new Float64Array(n);
+  if (!opt.ground) for (let i = 0; i < n; i++) ground[i] = sampleBilinear('dem', P[i].E, P[i].N);
+  const pol = opt.policy || null;
+  const target = pol ? pol.target : ground;
 
   const wantC = w.vCrestR, wantS = w.vSagR === undefined ? w.vCrestR : w.vSagR;
   const limC = ds * ds / wantC;              // greatest allowed |z''| on a crest
@@ -936,42 +1227,132 @@ function verticalProfile(P, w, opt) {
   const pins = [];
   for (const t of (opt.tie || [])) {
     const i0 = Math.max(0, Math.min(n - 1, t.idx));
-    pins.push({ i: i0, z: t.level === undefined ? ground[i0] : t.level });
+    // an untold level ties to the policy's level there (ground, unless the
+    // line is elevated or underground at that end)
+    pins.push({ i: i0, z: t.level === undefined ? target[i0] : t.level });
   }
-  const applyPins = q => { for (const p of pins) q[p.i] = p.z; };
+  /* The raw bounds are first opened just enough to admit each pin, then
+     shaped. (Not closed ONTO the pins: a crest parabola hung from a portal
+     would forbid leaving it on a straight grade, which is perfectly legal.)
+     Where a pin still ends up outside the shaped bounds — a portal next to a
+     creek sag deeper than a standard curve can leave in the distance
+     available — the bounds give way around the pin over a ramp at the ruling
+     gradient: a fixed level is a design decision and wins, and the policy
+     shortfall beside it is reported. */
+  let bounds = null;
+  if (pol) {
+    const lo0 = Float64Array.from(pol.lo), hi0 = Float64Array.from(pol.hi);
+    for (const p of pins) { lo0[p.i] = Math.min(lo0[p.i], p.z); hi0[p.i] = Math.max(hi0[p.i], p.z); }
+    bounds = shapeBounds(lo0, hi0, ds, w.maxGrade, wantC, wantS);
+    /* Give way smoothly: subtract (or add) a raised-cosine bump just deep
+       enough to admit the pin, wide enough that its own curvature stays
+       inside the standard radius and its slope inside the gradient. Cutting
+       the bound away outright left a step at the edge of the cut — a corner
+       the profile had to follow (crest R 710 m on the demo). */
+    const g = w.maxGrade / 100, Rmin = Math.min(wantC, wantS);
+    for (const p of pins) {
+      const dLo = bounds.lo[p.i] - p.z, dHi = p.z - bounds.hi[p.i];
+      const out = Math.max(dLo, dHi, 0);
+      if (out < 0.01) continue;
+      const halfM = Math.max(Math.PI * Math.sqrt(out * Rmin / 2), Math.PI * out / (2 * g * 0.8));
+      const half = Math.ceil(halfM / ds) + 2;
+      for (let k = Math.max(0, p.i - half); k <= Math.min(n - 1, p.i + half); k++) {
+        const b = 0.5 * (1 + Math.cos(Math.PI * (k - p.i) / half)) * (out + 0.01);
+        if (dLo > 0) bounds.lo[k] -= b;
+        if (dHi > 0) bounds.hi[k] += b;
+      }
+    }
+    /* Shaping can leave lo above hi where two policies meet over too short a
+       ramp. No level satisfies both there; clamping would make the profile
+       jump between them (a 358 % "grade" on the first test). Release both at
+       those samples — the raw policy is still what the shortfall is measured
+       against, so it is reported, not hidden. */
+    // given levels (lo = hi in the policy) are restored exactly and never released
+    const fixedAt = i => isFinite(pol.lo[i]) && pol.lo[i] === pol.hi[i];
+    for (let i = 0; i < n; i++) {
+      if (fixedAt(i)) { bounds.lo[i] = bounds.hi[i] = pol.lo[i]; continue; }
+      if (bounds.lo[i] > bounds.hi[i]) { bounds.lo[i] = -Infinity; bounds.hi[i] = Infinity; }
+    }
+  }
 
   /* Seed from the ground with the DEM's own sampling noise taken off — a 25 m
      resample of a 50 m grid carries steps that are an artefact of the data, not
      terrain, and they would otherwise drive thousands of iterations. */
-  let z = gaussSmooth(ground, Math.max(1, (G.cell * 1.2) / ds));
-  clampGradePinned(z, ds, w.maxGrade, pins);
+  let z = gaussSmooth(target, Math.max(1, (G.cell * 1.2) / ds));
+  clampGradePinned(z, ds, w.maxGrade, pins, bounds);
+  const pinnedEnd0 = pins.some(p => p.i === 0), pinnedEnd1 = pins.some(p => p.i === n - 1);
+  /* Under a policy, excess curvature AT a pin is taken out of its neighbours
+     (the pin cannot move): otherwise the correction is undone at once and the
+     corner on a tie point never leaves — the arms either side are each within
+     the limit, so nothing else ever moves either. */
+  const isPin = bounds ? new Uint8Array(n) : null;
+  if (isPin) for (const p of pins) isPin[p.i] = 1;
+  /* Given levels are fixed points too. Their own curvature is the existing
+     design's, judged against the standard where it is reported, not by the
+     fitter — so a sample whose whole stencil is given is left out of the
+     curvature pass and of the radius checks. That keeps the standard radius
+     for everything the tool designs itself, instead of opening it for the
+     whole line to admit the design's 25 km curves. */
+  const fixedRun = bounds ? new Uint8Array(n) : null;
+  if (bounds) for (let i = 0; i < n; i++)
+    if (isFinite(pol.lo[i]) && pol.lo[i] === pol.hi[i]) { isPin[i] = 1; fixedRun[i] = 1; }
+  const inside = i => fixedRun && fixedRun[i - 1] && fixedRun[i] && fixedRun[i + 1];
+  const armFix = [];
   let nz = new Float64Array(n);
   const RELAX = 0.7;
   let it = 0;
   for (; it < 4000; it++) {
     nz.set(z);
     let worst = 0;
+    armFix.length = 0;
     for (let i = 1; i < n - 1; i++) {
+      if (fixedRun && inside(i)) continue;
       const c = z[i-1] - 2*z[i] + z[i+1];
       let ex = 0;
       if (c > limS) ex = c - limS;
       else if (c < -limC) ex = c + limC;
       if (ex !== 0) {
-        nz[i] = z[i] + 0.5 * ex * RELAX;
+        if (isPin && isPin[i]) armFix.push(i, ex);
+        else nz[i] = z[i] + 0.5 * ex * RELAX;
         const rel = Math.abs(ex) / Math.max(limC, limS, 1e-12);
         if (rel > worst) worst = rel;
       }
     }
+    for (let k = 0; k < armFix.length; k += 2) {
+      const i = armFix[k], d = -0.25 * armFix[k + 1] * RELAX;
+      if (!isPin[i - 1]) nz[i - 1] += d;
+      if (!isPin[i + 1]) nz[i + 1] += d;
+    }
     const t = z; z = nz; nz = t;
+    /* With bounds, clamp into the box every pass, not every 32nd: the curvature
+       step and a bound meet at every viaduct pier over a road embankment, and
+       clamping each pass lets the line settle over the obstruction like a stiff
+       beam over a support instead of being knocked back up once in 32 steps. */
+    if (bounds) {
+      /* The curvature pass never moves the two end samples, so an unpinned
+         end stayed wherever the seed put it and anchored the short stub the
+         search leaves past the terminus — a corner on the end tie. Under a
+         policy an unpinned end simply continues the line (zero curvature). */
+      if (n > 3) {
+        if (!pinnedEnd0) z[0] = 2 * z[1] - z[2];
+        if (!pinnedEnd1) z[n-1] = 2 * z[n-2] - z[n-3];
+      }
+      clampBox(z, bounds.lo, bounds.hi);
+      // and hold the pins every pass too, so the line settles smoothly THROUGH
+      // them instead of being snapped onto them once in 32 steps — the snap is
+      // what left a corner on the end tie (crest 509 m on the demo). Only
+      // under a policy: the classic fit keeps its exact historical behaviour.
+      for (const p of pins) z[p.i] = p.z;
+    }
     if ((it & 31) === 31) {
-      clampGradePinned(z, ds, w.maxGrade, pins);
+      clampGradePinned(z, ds, w.maxGrade, pins, bounds);
       if (worst < 0.02) break;
     }
   }
   /* Final projection, then measure. If a pin still cannot be honoured, the
      corridor genuinely cannot reach that level within the ruling gradient, and
      that is a finding to report, not a number to quietly round away. */
-  clampGradePinned(z, ds, w.maxGrade, pins);
+  clampGradePinned(z, ds, w.maxGrade, pins, bounds);
   let tieError = 0, tieAt = null;
   for (const p of pins) {
     const e = Math.abs(z[p.i] - p.z);
@@ -981,20 +1362,35 @@ function verticalProfile(P, w, opt) {
   /* Verify, and fall back to the bandwidth fit if the projection could not get
      inside the feasible set — better a flat compliant profile plus an honest
      number on screen than a profile that quietly breaks the standard. */
-  let rv0 = verticalRadii(z, ds);
+  const radii = q => fixedRun ? verticalRadii(q, ds, inside) : verticalRadii(q, ds);
+  let rv0 = radii(z);
   let sigma = 0, method = 'projection';
   if (rv0.crest < wantC * 0.9 || rv0.sag < wantS * 0.9) {
     const trial = sig =>
-      clampGradePinned(gaussSmooth(ground, sig / ds), ds, w.maxGrade, pins);
-    const ok = q => { const r = verticalRadii(q, ds); return r.crest >= wantC && r.sag >= wantS; };
+      clampGradePinned(gaussSmooth(target, sig / ds), ds, w.maxGrade, pins, bounds);
+    const ok = q => { const r = radii(q); return r.crest >= wantC && r.sag >= wantS; };
     let lo = ds, hi = Math.max(4000, Math.min(60000, P[n-1].s * 0.25));
     if (!ok(trial(hi))) lo = hi;
     else for (let i = 0; i < 40; i++) {
       const mid = (lo + hi) / 2;
       if (ok(trial(mid))) hi = mid; else lo = mid;
     }
-    sigma = hi; z = trial(sigma); clampGradePinned(z, ds, w.maxGrade, pins);
-    method = 'bandwidth';
+    const zb = trial(hi); clampGradePinned(zb, ds, w.maxGrade, pins, bounds);
+    /* Under a policy the bounds can put the kinks straight back into a
+       smoothed profile (a viaduct must clear every embankment it crosses), and
+       then the "fallback" is worse than the projection it replaces. Keep
+       whichever comes closer to the standard; without bounds this is the
+       bandwidth fit, as it always was. */
+    const fit = q => { const r = radii(q); return Math.min(r.crest / wantC, r.sag / wantS); };
+    if (!bounds || fit(zb) >= fit(z)) { sigma = hi; z = zb; method = 'bandwidth'; }
+  }
+  // measured against the policy as asked for — not the shaped bounds, which
+  // were deliberately opened where the policy could not be met
+  let boundError = 0, boundAt = null, boundShort = 0;
+  if (pol) for (let i = 0; i < n; i++) {
+    const e = Math.max(pol.lo[i] - z[i], z[i] - pol.hi[i], 0);
+    if (e > 0.05) boundShort += ds;
+    if (e > boundError) { boundError = e; boundAt = i; }
   }
 
   const grade = new Float64Array(n);
@@ -1004,7 +1400,7 @@ function verticalProfile(P, w, opt) {
   const diff = new Float64Array(n);
   for (let i = 0; i < n; i++) diff[i] = z[i] - ground[i];   // + = fill, − = cut
 
-  const rv = verticalRadii(z, ds);
+  const rv = radii(z);
   let vip = 0, gsign = 0;
   for (let i = 1; i < n; i++) {
     const s = Math.abs(grade[i]) < 0.05 ? 0 : Math.sign(grade[i]);
@@ -1012,7 +1408,252 @@ function verticalProfile(P, w, opt) {
   }
   return { z, ground, grade, diff, ds, sigma, vip, method, iterations: it,
            tieError, tieAt, pins: pins.length,
+           boundError, boundAt, boundShort, policy: pol,
            minCrestR: rv.crest, minSagR: rv.sag };
+}
+
+/* Make the bounds something a compliant profile can actually rest on.
+
+   A raw lower bound (ground + clearance) has every corner the ground has; a
+   viaduct pressed against it inherits them, and the vertical curves came out
+   at a quarter of the standard on the demo escarpment (crest 5.7 km against
+   21.9 km). Smoothing the profile cannot help — the bound holds it up at the
+   corner. So the bound is rounded first, the way the line would be:
+     · the lower bound is spread at the ruling gradient (no profile can fall
+       away from a high point faster than that anyway), then dilated by a
+       crest parabola of the standard radius — max over y of
+       lo(y) − (x−y)²/2R — so wherever it binds, it is itself a legal crest;
+     · the upper bound, mirror image, with sag parabolas.
+   The dilation is a little stronger than strictly necessary (it hangs the
+   parabola symmetrically over each obstruction where a tilted one would do),
+   which costs a few decimetres of height over a crossing — the price of a
+   feasible set the projection can reach. Sags against a lower bound and
+   crests under an upper bound need no help: the profile clears them by
+   moving away from the bound, which the bound allows. */
+function shapeBounds(lo0, hi0, ds, maxGradePct, Rc, Rs) {
+  const n = lo0.length, lim = maxGradePct / 100 * ds;
+  const lo = Float64Array.from(lo0), hi = Float64Array.from(hi0);
+  for (let i = 1; i < n; i++) {
+    if (lo[i-1] - lim > lo[i]) lo[i] = lo[i-1] - lim;
+    if (hi[i-1] + lim < hi[i]) hi[i] = hi[i-1] + lim;
+  }
+  for (let i = n - 2; i >= 0; i--) {
+    if (lo[i+1] - lim > lo[i]) lo[i] = lo[i+1] - lim;
+    if (hi[i+1] + lim < hi[i]) hi[i] = hi[i+1] + lim;
+  }
+  const parab = (src, R, sign) => {
+    // sign +1: dilate with a crest parabola (max of y − d²/2R); −1: erode with a sag one
+    let fmin = Infinity, fmax = -Infinity;
+    for (let i = 0; i < n; i++) if (isFinite(src[i])) { if (src[i] < fmin) fmin = src[i]; if (src[i] > fmax) fmax = src[i]; }
+    if (!isFinite(fmin) || fmax - fmin < 1e-6) return src;
+    const win = Math.min(n, Math.ceil(Math.sqrt(2 * R * (fmax - fmin)) / ds) + 1);
+    const k = new Float64Array(win + 1);
+    for (let d = 0; d <= win; d++) k[d] = (d * ds) * (d * ds) / (2 * R);
+    const out = Float64Array.from(src);
+    for (let i = 0; i < n; i++) {
+      if (!isFinite(src[i])) continue;
+      const a = Math.max(0, i - win), b = Math.min(n - 1, i + win);
+      let best = out[i];
+      for (let j = a; j <= b; j++) {
+        const v = src[j];
+        if (!isFinite(v)) continue;
+        const d = j > i ? j - i : i - j;
+        if (sign > 0) { const c = v - k[d]; if (c > best) best = c; }
+        else          { const c = v + k[d]; if (c < best) best = c; }
+      }
+      out[i] = best;
+    }
+    return out;
+  };
+  return { lo: parab(lo, Rc, +1), hi: parab(hi, Rs, -1) };
+}
+
+function clampBox(z, lo, hi) {
+  for (let i = 0; i < z.length; i++) {
+    if (z[i] > hi[i]) z[i] = hi[i];
+    else if (z[i] < lo[i]) z[i] = lo[i];
+  }
+}
+
+/* ---------------------------------------------------- VERTICAL POLICY --- */
+/* What the vertical profile is asked to do, sample by sample.
+
+   'ground'    follow the ground — earthworks, the classic fit (and the default:
+               with every leg on 'ground' and nothing given, policyFor returns
+               null and the fitter runs exactly as it always has).
+   'elevated'  viaduct by default: target rail level = ground + typical
+               clearance, and never below ground + minimum clearance. Indian
+               high-speed practice — 1,531 surveyed piers on MAHSR S5 put rail
+               8.1 m above ground at the least and 11.75 m at the median, the
+               minimum reached at the sag of every grade, i.e. the grade line is
+               set to just clear the ground plus a pier.
+   'tunnel'    bored: rail at least `depth` below the ground — or below the
+               creek bed, where the DEM's surface is water and the bed lies
+               `waterDepth` further down (the DEM has no bathymetry). The target
+               is the straight grade between the tunnel's two ends, pulled down
+               only where the cover demands it — so under a hill the tunnel does
+               not climb into the hill (the BKC – Shilphata tunnel is 114 m
+               under Parsik hill for that reason) and under a creek it dives.
+   given       a design level fixed by the existing design: lo = hi = level.
+
+   A change of policy needs a ramp — a viaduct cannot become a tunnel in one
+   sample — so for a ramp length either side of the change the bounds are
+   lifted and the target blends linearly; the structure classifier then names
+   the ramp by what it is (embankment, cutting, U-trough as cutting).
+
+   spec = { leg: [policy per sample], params: { clearMin, clearTyp, depth,
+            waterDepth, rampGrade }, given: Float64Array | null (NaN = free),
+            water: Float64Array | null (water coverage per sample) }          */
+function policyFor(P, ground, spec) {
+  const n = P.length;
+  const leg = spec.leg, pr = spec.params, given = spec.given;
+  const ds = n > 1 ? (P[n-1].s - P[0].s) / (n - 1) : 1;
+  /* A fixed level alone (an underground station on an otherwise ordinary
+     line) also needs the policy path: the classic fit would meet it with a
+     corner — sag R 500 m against a 35.8 km standard, found in review. */
+  let any = !!given || !!(spec.pinAt && spec.pinAt.some(isFinite));
+  for (let i = 0; i < n && !any; i++) if (leg[i] !== 'ground') any = true;
+  if (!any) return null;
+  const warnings = [];
+
+  const off = new Float64Array(n);              // desired level relative to ground
+  const surf = new Float64Array(n);             // what tunnel cover is measured from
+  for (let i = 0; i < n; i++) {
+    const wet = spec.water ? spec.water[i] : 0;
+    surf[i] = ground[i] - (wet > 0.5 ? pr.waterDepth : 0);
+    off[i] = leg[i] === 'elevated' ? pr.clearTyp : leg[i] === 'tunnel' ? -pr.depth : 0;
+  }
+  const target = new Float64Array(n), lo = new Float64Array(n), hi = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    target[i] = leg[i] === 'tunnel' ? surf[i] - pr.depth : ground[i] + off[i];
+    lo[i] = leg[i] === 'elevated' ? ground[i] + pr.clearMin : -Infinity;
+    hi[i] = leg[i] === 'tunnel' ? surf[i] - pr.depth : Infinity;
+  }
+  /* Tunnel target: the chord between the run's end levels, pulled down to the
+     cover line where it has to be. Ends are the given level or a pin if there
+     is one, otherwise the cover line itself. */
+  for (let i = 0; i < n; ) {
+    if (leg[i] !== 'tunnel') { i++; continue; }
+    let j = i; while (j + 1 < n && leg[j + 1] === 'tunnel') j++;
+    const za = given && isFinite(given[i]) ? given[i] : spec.pinAt && isFinite(spec.pinAt[i]) ? spec.pinAt[i] : target[i];
+    const zb = given && isFinite(given[j]) ? given[j] : spec.pinAt && isFinite(spec.pinAt[j]) ? spec.pinAt[j] : target[j];
+    for (let k = i; k <= j; k++) {
+      const chord = j > i ? za + (zb - za) * (k - i) / (j - i) : za;
+      target[k] = Math.min(chord, hi[k]);
+    }
+    i = j + 1;
+  }
+  /* Ramps at each change of policy: long enough to make the change at a
+     fraction of the ruling gradient AND to get into and out of that grade on
+     vertical curves of the standard radius (2·R·g), centred on the change. A
+     ramp sized on the gradient alone left the viaduct's and the tunnel's
+     rounded bounds overlapping in the middle of it. */
+  const g = Math.max(0.1, pr.rampGrade) / 100, Rv = pr.rampR || 0;
+  const runs = [];
+  for (let i = 0; i < n; ) { let j = i; while (j + 1 < n && leg[j + 1] === leg[i]) j++; runs.push([i, j]); i = j + 1; }
+  const runLen = r => r[1] - r[0] + 1;
+  /* A ramp may take at most 40 % of either policy stretch it joins, so a
+     short stretch keeps some of its policy — and when it cannot keep its
+     policy that shows as a measured shortfall. Released whole, a 3 km viaduct
+     between two tunnels used to vanish into its ramps unreported. */
+  const capRamp = (half, lenA, lenB, s, from, to) => {
+    const cap = Math.max(2, Math.floor(0.4 * Math.min(lenA, lenB)));
+    if (half <= cap) return half;
+    warnings.push(`${from} → ${to} at ${(s / 1000).toFixed(2)} km: the change needs ` +
+                  `${(2 * half * ds / 1000).toFixed(1)} km of ramp, the stretches either side allow ` +
+                  `${(2 * cap * ds / 1000).toFixed(1)} km`);
+    return cap;
+  };
+  const blend = (idx, ta, tb) => {          // linear target over a list of sample indices
+    for (let q = 0; q < idx.length; q++) {
+      const k = idx[q];
+      if (given && isFinite(given[k])) continue;
+      target[k] = ta + (tb - ta) * q / Math.max(1, idx.length - 1);
+      lo[k] = -Infinity; hi[k] = Infinity;
+    }
+  };
+  for (let r = 1; r < runs.length; r++) {
+    const i = runs[r][0];
+    const dz = Math.abs(target[i] - target[i - 1]);
+    let half = Math.ceil((dz / g + 2 * Rv * g) / ds / 2) + 2;
+    half = capRamp(half, runLen(runs[r - 1]), runLen(runs[r]), P[i].s, leg[i - 1], leg[i]);
+    const a = Math.max(0, i - half), b = Math.min(n - 1, i + half);
+    const idx = []; for (let k = a; k <= b; k++) idx.push(k);
+    blend(idx, target[a], target[b]);
+  }
+  /* A closed loop's seam is a change of policy too (the closing leg meets the
+     first): ramp across the wrap, with the two end samples — the same point on
+     the ground — given the same level. Without it the loop did not close: a
+     42 m step at the seam in review. */
+  if (spec.closed && runs.length > 1 && leg[0] !== leg[n - 1]) {
+    const dz = Math.abs(target[0] - target[n - 1]);
+    let half = Math.ceil((dz / g + 2 * Rv * g) / ds / 2) + 2;
+    half = capRamp(half, runLen(runs[0]), runLen(runs[runs.length - 1]), 0, leg[n - 1], leg[0]);
+    const idx = [];
+    for (let k = n - 1 - half; k <= n - 1; k++) idx.push(k);   // ... n-1 ≡ 0 ...
+    for (let k = 1; k <= half; k++) idx.push(k);
+    blend(idx, target[n - 1 - half], target[half]);
+    target[0] = target[n - 1]; lo[0] = lo[n - 1]; hi[0] = hi[n - 1];
+  }
+  /* A level fixed at a control point wins over the leg's policy around it:
+     an underground station box sits shallower than the running tunnel's
+     cover, a portal is at the surface. Lift the bounds over a ramp either
+     side and lead the target into the fixed level on a smoothstep — level at
+     the fixed point (a platform is level), and long enough that its own
+     curvature, 6·Δ/L², is inside the standard radius. A straight V into the
+     pin was a corner the fitter could not remove (sag R 2.2 km in review). */
+  if (spec.pinAt) for (let i = 0; i < n; i++) {
+    const pz = spec.pinAt[i];
+    if (!isFinite(pz)) continue;
+    const dz = Math.abs(pz - target[i]);
+    const Lm = Math.max(dz / g * 1.5, Rv > 0 ? Math.sqrt(6 * dz * Rv) * 1.15 : 0, 2 * ds);
+    const half = Math.ceil(Lm / ds) + 2;
+    const a = Math.max(0, i - half), b = Math.min(n - 1, i + half);
+    const ta = target[a], tb = target[b];
+    const S = t => t * t * (3 - 2 * t);
+    for (let k = a; k <= b; k++) {
+      if (given && isFinite(given[k])) continue;
+      target[k] = k <= i ? pz + (ta - pz) * S((i - k) / Math.max(1, i - a))
+                         : pz + (tb - pz) * S((k - i) / Math.max(1, b - i));
+      lo[k] = -Infinity; hi[k] = Infinity;
+    }
+  }
+  /* The ends of a stretch of given levels are fixed levels too, and get the
+     same ramp beside them: the existing design's levels must meet the
+     policy's estimate somewhere, and without room to do it the viaduct's
+     clearance (spread at the ruling gradient) collided with the given levels
+     and overrode them — 64 m out on the first test. */
+  if (given) {
+    /* Leaving a given stretch, the target first CONTINUES the given grade and
+       then eases (smoothstep) into the policy's level — so the seed has no
+       corner where the existing design's levels stop. */
+    const pol0 = Float64Array.from(target);
+    const S = t => t * t * (3 - 2 * t);
+    for (let i = 0; i < n; i++) {
+      if (!isFinite(given[i])) continue;
+      const isStart = i === 0 || !isFinite(given[i - 1]), isEnd = i === n - 1 || !isFinite(given[i + 1]);
+      if (!isStart && !isEnd) continue;
+      const dir = isStart ? -1 : 1;
+      const back = i - dir;                        // the given sample behind the end
+      const slope = back >= 0 && back < n && isFinite(given[back]) ? given[i] - given[back] : 0;
+      const dz = Math.abs(given[i] - pol0[i]);
+      const Lm = Math.max(dz / g * 1.5, Rv > 0 ? Math.sqrt(6 * dz * Rv) * 1.15 : 0, 2 * ds);
+      const far = Math.min(n - 1, Math.max(0, i + dir * (Math.ceil(Lm / ds) + 2)));
+      for (let k = i + dir; dir < 0 ? k >= far : k <= far; k += dir) {
+        if (isFinite(given[k])) break;
+        const steps = (k - i) * dir, f = steps / Math.max(1, (far - i) * dir);
+        const ext = given[i] + slope * steps;
+        target[k] = ext + (pol0[k] - ext) * S(f);
+        lo[k] = -Infinity; hi[k] = Infinity;
+      }
+    }
+    for (let i = 0; i < n; i++) {
+      if (!isFinite(given[i])) continue;
+      target[i] = lo[i] = hi[i] = given[i];
+    }
+  }
+  return { target, lo, hi, leg, params: pr, surf, warnings,
+           givenCount: given ? given.filter(isFinite).length : 0 };
 }
 
 /* -------------------------------------------------- STRUCTURE SELECTION --- */
@@ -1044,15 +1685,32 @@ function structureThresholds(std) {
   };
 }
 
-function classifyStructures(P, vp, t) {
+function classifyStructures(P, vp, t, declared) {
   const n = P.length, out = new Array(n);
   const hasWater = has('water_body') || has('river_major');
+  const pol = vp.policy, pr = pol && pol.params;
   for (let i = 0; i < n; i++) {
+    /* What an existing design SAYS it builds wins over what the levels
+       suggest: a station or a special span reads as neither from cut/fill. */
+    if (declared && declared[i]) { out[i] = declared[i]; continue; }
     const d = vp.diff[i];
     const built = sample('built', P[i].E, P[i].N);
     const prot  = sample('protected', P[i].E, P[i].N);
     const river = hasWater
       ? sample('river_major', P[i].E, P[i].N) + sample('water_body', P[i].E, P[i].N) : 0;
+
+    /* Under a policy the intent is known: an elevated line that is a few
+       metres up is still a viaduct (short piers), not an embankment, and a
+       tunnel leg that is properly under cover is a tunnel even where the cover
+       is less than a cutting would need. Ramps fall through to the rules. */
+    const leg = pol ? pol.leg[i] : 'ground';
+    const free = pol && !isFinite(pol.lo[i]) && !isFinite(pol.hi[i]);
+    if (leg === 'elevated' && !free && d >= Math.min(t.fillViaduct, pr.clearMin * 0.75)) {
+      out[i] = river > 0.05 ? STRUCT.BRIDGE : STRUCT.VIADUCT; continue;
+    }
+    if (leg === 'tunnel' && !free && -(vp.z[i] - pol.surf[i]) >= Math.min(t.cutTunnel, pr.depth * 0.6)) {
+      out[i] = STRUCT.TUNNEL; continue;
+    }
 
     /* Order matters. What the alignment is doing relative to the ground is
        decided FIRST, because a sensitive-land rule cannot tunnel a formation
@@ -1076,7 +1734,8 @@ function classifyStructures(P, vp, t) {
   let i = 0;
   while (i < n) {
     let j = i; while (j < n && out[j] === out[i]) j++;
-    if (j - i < minRun && i > 0) {
+    // a declared structure is built as declared, however short
+    if (j - i < minRun && i > 0 && !(declared && declared[i])) {
       let peak = 0;
       for (let k = i; k < j; k++) peak = Math.max(peak, Math.abs(vp.diff[k]));
       const marginal = out[i] === STRUCT.VIADUCT ? peak < t.fillViaduct * 1.8
@@ -1202,9 +1861,9 @@ function trapezoid(d, vmaxKmh, a, b) {
 /* ---------------------------------------------------------------- API ---- */
 global.ENGINE = {
   G, loadProject, sample, sampleBilinear, cellCost, activeCostLayers,
-  buildCostGrid, buildTerrainField, invalidateSurfaces,
+  buildCostGrid, buildTerrainField, invalidateSurfaces, costToGo,
   search, searchChain, routeLeg, resample, curvature, countHIP, auditRadius, strideFor,
-  verticalProfile, verticalRadii, classifyStructures, structureRuns, structureThresholds,
+  verticalProfile, verticalRadii, policyFor, classifyStructures, structureRuns, structureThresholds,
   speedProfile, nodeChainages, trapezoid,
   DEFAULT_WEIGHTS, COVERAGE_KEYS, STRUCT, NH, DB, e2ix, n2iy, has,
 };

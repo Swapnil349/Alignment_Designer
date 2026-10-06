@@ -61,7 +61,10 @@ def main():
             port = int(a)
 
     handler = functools.partial(Handler, directory=ROOT)
-    socketserver.TCPServer.allow_reuse_address = True
+    # On Windows, SO_REUSEADDR lets a second server bind a port another one
+    # already holds, so the free-port search below would never move on and two
+    # servers would share 8770. Ask for it only where it means "restart fast".
+    socketserver.TCPServer.allow_reuse_address = os.name != "nt"
     for attempt in range(12):
         try:
             httpd = socketserver.ThreadingTCPServer(("127.0.0.1", port), handler)

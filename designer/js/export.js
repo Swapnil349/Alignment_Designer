@@ -129,7 +129,7 @@ function exportLandXML(r, name, crs) {
   x.push(`  <Application name="Alignment Designer v12" version="12"/>`);
   if (crs) x.push(`  <CoordinateSystem desc="${crs}" horizontalDatum="${crs}"/>`);
   x.push(`  <Alignments name="corridor">`);
-  x.push(`    <Alignment name="${name}" length="${L.toFixed(4)}" staStart="0.0">`);
+  x.push(`    <Alignment name="${name}" length="${L.toFixed(4)}" staStart="${(r.ch0 || 0).toFixed(1)}">`);
   x.push(`      <CoordGeom>`);
   for (let i = stepN; i < n; i += stepN) {
     const a = P[i-stepN], b = P[i];
@@ -149,12 +149,12 @@ function exportLandXML(r, name, crs) {
      with 16 000 PVIs is unusable in the receiving package. */
   const pvStep = Math.max(1, Math.round(n / 400));
   for (let i = 0; i < n; i += pvStep)
-    x.push(`          <PVI>${P[i].s.toFixed(3)} ${r.vp.z[i].toFixed(3)}</PVI>`);
+    x.push(`          <PVI>${(P[i].s + (r.ch0 || 0)).toFixed(3)} ${r.vp.z[i].toFixed(3)}</PVI>`);
   x.push(`          <PVI>${L.toFixed(3)} ${r.vp.z[n-1].toFixed(3)}</PVI>`);
   x.push(`        </ProfAlign>`);
   x.push(`        <ProfSurf name="existing ground">`);
   const gs = [];
-  for (let i = 0; i < n; i += pvStep) gs.push(`${P[i].s.toFixed(2)} ${r.vp.ground[i].toFixed(2)}`);
+  for (let i = 0; i < n; i += pvStep) gs.push(`${(P[i].s + (r.ch0 || 0)).toFixed(2)} ${r.vp.ground[i].toFixed(2)}`);
   x.push(`          <PntList2D>${gs.join(' ')}</PntList2D>`);
   x.push(`        </ProfSurf>`);
   x.push(`      </Profile>`);
@@ -171,7 +171,7 @@ function exportCSV(r, name) {
           'radius_m,structure,speed_kmh,time_s,mass_haul_m3\n';
   for (let i = 0; i < P.length; i++) {
     const R = isFinite(r.R[i]) ? r.R[i].toFixed(0) : '';
-    s += [P[i].s.toFixed(1), P[i].E.toFixed(2), P[i].N.toFixed(2),
+    s += [(P[i].s + (r.ch0 || 0)).toFixed(1), P[i].E.toFixed(2), P[i].N.toFixed(2),
           r.vp.ground[i].toFixed(2), r.vp.z[i].toFixed(2), r.vp.diff[i].toFixed(2),
           r.vp.grade[i].toFixed(3), R, r.structs[i].id,
           (r.sp.v[i]*3.6).toFixed(1), r.sp.t[i].toFixed(1),
@@ -193,7 +193,7 @@ function exportGeoJSON(r, name, crs) {
   for (const c of (r.chn || [])) {
     if (c.node.synthetic) continue;
     feats.push({ type: 'Feature',
-      properties: { control_point: c.node.name || c.node.id, chainage_m: Math.round(c.s),
+      properties: { control_point: c.node.name || c.node.id, chainage_m: Math.round(c.s + (r.ch0 || 0)),
                     design_level_m: +r.vp.z[c.idx].toFixed(2) },
       geometry: { type: 'Point', coordinates: [+c.node.E.toFixed(2), +c.node.N.toFixed(2)] } });
   }
@@ -342,6 +342,9 @@ function exportSheet(map, r, name, R) {
   line('they rank options against each other, not an estimate.', { size: 10.5, col: '#6b7280' });
 
   ctx.drawImage(mapCv, panelW, headH);
+  // drawProfile records its screen mapping on the result; the sheet's own
+  // drawing must not leave the app's long section reading the sheet's numbers
+  const liveProfX = r._profX;
   const prof = document.createElement('canvas');
   prof.width = W - 2*pad; prof.height = profH - pad;
   R.drawProfile(prof, r, null);
@@ -350,6 +353,7 @@ function exportSheet(map, r, name, R) {
   haul.width = W - 2*pad; haul.height = haulH - pad;
   R.drawMassHaul(haul, r, null);
   ctx.drawImage(haul, pad, headH + mapCv.height + profH + 2);
+  r._profX = liveProfX;
 
   const a = document.createElement('a');
   a.download = name + '_sheet.png';

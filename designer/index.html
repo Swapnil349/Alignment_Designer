@@ -61,6 +61,20 @@ canvas#map:active{cursor:grabbing}
              letter-spacing:.6px;padding:5px 10px;border-bottom:1px solid var(--line);
              flex-shrink:0;display:flex;justify-content:space-between}
 .chartbox canvas{flex:1;width:100%;min-height:0}
+/* The long section scrolls: a sticky canvas the size of the viewport, and an
+   absolutely-positioned spacer as wide as the zoomed section, which is what
+   gives the box its native horizontal scrollbar. */
+.lsview{flex:1;position:relative;overflow-x:scroll;overflow-y:hidden;min-height:0;cursor:grab}
+.lsview.drag{cursor:grabbing}
+.lsview canvas#profile{position:sticky;left:0;display:block;flex:none}
+.lsspacer{position:absolute;top:0;left:0;height:1px;pointer-events:none}
+.lsctl{display:flex;align-items:center;gap:4px;text-transform:none;letter-spacing:0;
+       font-weight:600;color:#4b5563}
+.lsctl button{width:auto;padding:1px 7px;font-size:11px;background:#eef1f4;color:#333;
+              border-radius:4px;line-height:1.4}
+.lsctl button:hover{background:#e2e7ec}
+.lsctl select{width:auto;padding:1px 3px;font-size:10.5px}
+.lsctl .lsread{font:600 10px ui-monospace,monospace;color:var(--acc);min-width:150px;text-align:center}
 
 .legend{position:absolute;top:12px;right:12px;background:rgba(255,255,255,.94);
         border:1px solid var(--line);border-radius:7px;padding:9px 11px;font-size:10.5px;
@@ -73,12 +87,25 @@ canvas#map:active{cursor:grabbing}
          border:1px solid var(--line);border-radius:6px;padding:6px 10px;
          font:10.5px ui-monospace,monospace;color:#374151;max-width:70%}
 #status{position:absolute;top:12px;left:12px;background:rgba(20,24,28,.9);color:#fff;
-        border-radius:6px;padding:8px 13px;font-size:12px;display:none;max-width:60%}
+        border-radius:6px;padding:8px 13px;font-size:12px;display:none;max-width:60%;
+        z-index:7}                       /* above the 3-D view, whose bar is at the top left */
+#maprow.v3d #status{top:52px}
 #editbar{position:absolute;bottom:12px;right:12px;background:rgba(255,255,255,.95);
          border:1px solid var(--line);border-radius:7px;padding:5px;display:flex;gap:4px;
          box-shadow:0 2px 10px rgba(0,0,0,.09)}
 #editbar button{width:auto;padding:5px 10px;font-size:11px;background:#eef1f4;color:#333}
 #editbar button.on{background:var(--acc);color:#fff}
+/* 3-D view: covers the map box exactly; its own bar on top */
+#v3dWrap{position:absolute;inset:0;background:#dfe6ec;z-index:5}
+#v3dWrap canvas{display:block;width:100%;height:100%}
+#v3dBar{position:absolute;top:10px;left:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;
+  background:rgba(255,255,255,.95);border-radius:6px;padding:5px 9px;font-size:11px;
+  box-shadow:0 1px 4px rgba(0,0,0,.18)}
+#v3dBar label{display:flex;align-items:center;gap:4px;margin:0;font-weight:400;color:#333}
+#v3dBar input[type=range]{width:90px}
+#v3dBar button{width:auto;padding:3px 8px;font-size:11px;background:#eef1f4;color:#333}
+#v3dMsg{position:absolute;bottom:12px;left:12px;font-size:11px;color:#333;background:rgba(255,255,255,.9);
+  border-radius:4px;padding:3px 7px;display:none}
 
 table.res{width:100%;border-collapse:collapse;font-size:11.5px}
 table.res td{padding:3px 0;border-bottom:1px solid #f0f2f4;vertical-align:top}
@@ -92,6 +119,8 @@ table.cmp th{text-align:left;font-size:9px;color:var(--mut);text-transform:upper
              letter-spacing:.4px;padding:3px 2px;border-bottom:1.5px solid var(--ink)}
 table.cmp td{padding:4px 2px;border-bottom:1px solid #eef0f2;font-variant-numeric:tabular-nums}
 table.cmp tr.opt{cursor:pointer} table.cmp tr.opt:hover{background:#f2f6ff}
+table.cmp tr.flash{animation:rowflash .9s ease-out}
+@keyframes rowflash{from{background:#ffe9a8}to{background:#e5edff}}
 table.cmp tr.sel{background:#e5edff;box-shadow:inset 3px 0 0 var(--acc)}
 table.cmp tr.win td{font-weight:700}
 .swatch{display:inline-block;width:11px;height:11px;border-radius:3px;vertical-align:-1px;
@@ -104,6 +133,12 @@ table.cmp tr.win td{font-weight:700}
 .cp input{flex:1;padding:3px 5px;font-size:11px}
 .cp button{width:auto;padding:2px 6px;font-size:10px;background:#eef1f4;color:#666;border-radius:4px}
 .cp button:hover{background:#fbdcdc;color:#b02a2a}
+/* the vertical intent of each control point: what the leg after it does, and a fixed level */
+.cpv{display:flex;gap:4px;margin:-1px 0 6px 15px;font-size:10.5px;align-items:center}
+.cpv select{flex:1.3;padding:1px 3px;font-size:10.5px}
+.cpv input{flex:1;min-width:0;padding:1px 4px;font-size:10.5px}
+.cpv.tun select{background:#fbeaea}
+.cpv.elv select{background:#e8f0fb}
 .tabs{display:flex;border-bottom:1px solid var(--line);flex-shrink:0;background:#fbfbfa}
 .tabs div{flex:1;text-align:center;padding:9px 4px;font-size:11px;font-weight:600;color:var(--mut);
           cursor:pointer;border-bottom:2px solid transparent}
@@ -121,7 +156,7 @@ table.cmp tr.win td{font-weight:700}
 <body>
 
 <div id="boot"><div>Alignment Designer</div><div class="bar"><i id="bootBar"></i></div>
-  <div id="bootMsg" style="color:#9fb3d0;font-size:11.5px">starting…</div></div>
+  <div id="bootMsg" style="color:#9fb3d0;font-size:11.5px;max-width:520px;text-align:center;line-height:1.6">starting…</div></div>
 
 <div id="app">
 
@@ -165,6 +200,8 @@ table.cmp tr.win td{font-weight:700}
         <button id="runOne">Route the alignment</button>
         <button id="runStudy" class="sec2">Generate options</button>
         <button id="runRef" class="sec2" style="display:none">Load reference alignment</button>
+        <label class="chk" id="inclRefRow" style="display:none;margin-top:6px"><input type="checkbox" id="inclRef">
+          <span>Rank the existing design with the options</span></label>
         <div class="row" style="margin-top:9px"><label>Search stride</label>
           <input type="range" id="s-stride" min="50" max="2500" step="25" value="400">
           <span class="val" id="v-stride">400 m</span></div>
@@ -199,13 +236,41 @@ table.cmp tr.win td{font-weight:700}
         <button id="mAdd">+ Add</button>
         <button id="mDel">Delete</button>
         <button id="mFit">Fit</button>
+        <button id="m3d" title="A 3-D model of the alignment and the ground around it">3D</button>
+      </div>
+      <!-- 3-D view: laid over the map, same box; the map underneath keeps its state -->
+      <div id="v3dWrap" style="display:none">
+        <canvas id="v3d"></canvas>
+        <div id="v3dBar">
+          <b>3D</b>
+          <label title="Vertical exaggeration — 1× is true scale">VE <input type="range" id="v3dVE" min="1" max="20" step="0.5" value="3"><span id="v3dVEv">3×</span></label>
+          <label title="See through the ground to tunnels and cuttings"><input type="checkbox" id="v3dX"> x-ray</label>
+          <label title="Constraint layers draped on the terrain"><input type="checkbox" id="v3dL" checked> layers</label>
+          <label title="Corridor either side of the line, km">± <input type="number" id="v3dBuf" min="0.5" max="30" step="0.5" value="3" style="width:46px"> km</label>
+          <button id="v3dReset" title="Reset the view (R)">reset</button>
+          <button id="v3dClose" title="Back to the map">✕ map</button>
+        </div>
+        <div id="v3dMsg"></div>
       </div>
     </div>
     <div id="charts">
       <div class="chartbox">
         <h4><span>Long section — ground, design level, structures</span>
+            <span class="lsctl" title="Wheel over the section zooms; drag or the scrollbar pans; Shift+wheel scrolls">
+              <button id="lsOut" title="Zoom out">−</button>
+              <span class="lsread" id="lsRead">whole route</span>
+              <button id="lsIn" title="Zoom in">+</button>
+              <button id="lsFit" title="Show the whole route">Fit</button>
+              <span>&nbsp;vertical</span>
+              <select id="lsVE" title="Vertical exaggeration: 1× shows slopes as they really are">
+                <option value="auto">auto</option><option value="1">1×</option>
+                <option value="2">2×</option><option value="5">5×</option>
+                <option value="10">10×</option><option value="20">20×</option>
+                <option value="50">50×</option><option value="100">100×</option>
+              </select></span>
             <span id="profStat"></span></h4>
-        <canvas id="profile"></canvas></div>
+        <div class="lsview" id="lsView"><canvas id="profile"></canvas>
+          <div class="lsspacer" id="lsSpacer"></div></div></div>
       <div class="chartbox" style="flex:.72">
         <h4><span>Mass haul — cumulative cut less fill</span>
             <span id="haulStat"></span></h4>
@@ -264,12 +329,13 @@ table.cmp tr.win td{font-weight:700}
   </div>
 </div>
 
-<script src="js/standards.js?v=13"></script>
-<script src="js/engine.js?v=13"></script>
-<script src="js/costs.js?v=13"></script>
-<script src="js/study.js?v=13"></script>
-<script src="js/render.js?v=13"></script>
-<script src="js/export.js?v=13"></script>
-<script src="js/app.js?v=13"></script>
+<script src="js/standards.js?v=33"></script>
+<script src="js/engine.js?v=33"></script>
+<script src="js/costs.js?v=33"></script>
+<script src="js/study.js?v=33"></script>
+<script src="js/render.js?v=33"></script>
+<script src="js/export.js?v=33"></script>
+<script src="js/view3d.js?v=33"></script>
+<script src="js/app.js?v=33"></script>
 </body>
 </html>

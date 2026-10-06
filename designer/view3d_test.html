@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>3-D view — test bench</title>
+<!--
+  Standalone bench for js/view3d.js: loads a project, routes ONE option the
+  way the app's "Route one" does (or evaluates the project's reference line
+  when it carries one), routes a couple of alternatives to show beside it, and
+  puts the 3-D view on screen with its controls. Not part of the app — it
+  exists so the viewer can be developed and checked without app.js.
+
+    view3d_test.html                       demo project
+    view3d_test.html?project=london2100    the London reference loop
+    ?route=1   route the project's controls even when it has a reference
+    ?others=0  skip the alternatives (each one is a full lattice search)
+    ?w=1200&h=760  fix the 3-D canvas size (useful in a hidden browser pane)
+    ?bare=1    hide the side panel (screenshots; window.V3 is the viewer)
+    ?webgl1=1  force the WebGL1 fallback path (OES_element_index_uint)
+-->
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--ink:#14181c;--mut:#6b7280;--line:#dfe3e8;--bg:#f6f5f2;--acc:#1d4ed8;--warn:#c62828}
+body{font:13px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--ink);background:var(--bg);
+     height:100vh;overflow:hidden}
+#app{display:flex;height:100vh}
+#panel{width:290px;flex-shrink:0;background:#fff;border-right:1px solid var(--line);overflow-y:auto}
+.hd{padding:12px 14px;background:#14181c;color:#fff}
+.hd h1{font-size:13.5px;font-weight:650}
+.hd p{font-size:10.5px;color:#9fb3d0;margin-top:2px}
+.sec{padding:11px 14px;border-bottom:1px solid var(--line)}
+.sec h3{font-size:10px;font-weight:700;color:var(--mut);text-transform:uppercase;letter-spacing:.7px;margin-bottom:8px}
+.row{display:flex;align-items:center;gap:8px;margin-bottom:7px}
+.row label{flex:1;font-size:11px;color:#4b5563}
+.row input[type=range]{flex:1.3;accent-color:var(--acc);min-width:0}
+.val{font:600 11px ui-monospace,monospace;color:var(--acc);min-width:52px;text-align:right}
+.chk{display:flex;align-items:center;gap:7px;margin-bottom:5px;font-size:11.5px;cursor:pointer}
+.chk input{accent-color:var(--acc)}
+.sw{display:inline-block;width:11px;height:11px;border-radius:2px;border:1px solid rgba(0,0,0,.15)}
+select{width:100%;padding:5px;border:1px solid var(--line);border-radius:5px;font-size:11.5px}
+button{padding:6px 10px;background:#eef1f4;color:#333;border:0;border-radius:5px;cursor:pointer;
+       font:600 11.5px system-ui}
+button:hover{background:#e2e7ec}
+#status{font-size:11px;color:#374151;white-space:pre-wrap}
+#status.err{color:var(--warn)}
+#stats{font:10.5px/1.5 ui-monospace,monospace;color:#4b5563;white-space:pre-wrap}
+#read{font:600 11px ui-monospace,monospace;color:var(--acc);min-height:16px}
+#stage{flex:1;position:relative;min-width:0;background:#dfe6ee}
+#c3d{display:block;width:100%;height:100%;outline:none}
+.help{font-size:10.5px;color:var(--mut);line-height:1.5}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="panel">
+    <div class="hd"><h1>3-D view — test bench</h1><p>js/view3d.js on its own</p></div>
+    <div class="sec">
+      <h3>Project</h3>
+      <select id="proj"></select>
+      <div id="status" style="margin-top:8px">loading…</div>
+    </div>
+    <div class="sec">
+      <h3>View</h3>
+      <div class="row"><label>Vertical exaggeration</label>
+        <input type="range" id="ve" min="1" max="12" step="0.5" value="3"><span class="val" id="veV">×3</span></div>
+      <div class="row"><label>Terrain opacity</label>
+        <input type="range" id="ta" min="0.15" max="1" step="0.05" value="1"><span class="val" id="taV">100 %</span></div>
+      <div class="row"><label>Deck width</label>
+        <input type="range" id="rw" min="1" max="8" step="0.5" value="2"><span class="val" id="rwV">×2</span></div>
+      <label class="chk"><input type="checkbox" id="xray"> X-ray terrain (see tunnels)</label>
+      <label class="chk"><input type="checkbox" id="hidden" checked> Hidden line (dashed, under ground)</label>
+      <label class="chk"><input type="checkbox" id="slopes" checked> Earthwork slopes</label>
+      <label class="chk"><input type="checkbox" id="piers" checked> Piers</label>
+      <label class="chk"><input type="checkbox" id="labels" checked> Labels</label>
+      <label class="chk"><input type="checkbox" id="others" checked> Alternatives</label>
+      <div style="display:flex;gap:6px;margin-top:6px"><button id="reset">Reset view (R)</button><button id="snap">PNG</button></div>
+    </div>
+    <div class="sec">
+      <h3>Chainage</h3>
+      <input type="range" id="ch" min="0" max="1000" step="1" value="0" style="width:100%">
+      <div id="read">—</div>
+      <p class="help">Drag to move the marker; release to fly there. Click the line in 3-D to pick.</p>
+    </div>
+    <div class="sec">
+      <h3>Constraint layers</h3>
+      <div id="layers"></div>
+    </div>
+    <div class="sec">
+      <h3>Numbers</h3>
+      <div id="stats"></div>
+    </div>
+    <div class="sec help">
+      Left-drag orbit · right- or shift-drag pan · wheel zoom to cursor · double-click re-centre ·
+      R reset · arrows orbit · +/− zoom
+    </div>
+  </div>
+  <div id="stage"><canvas id="c3d"></canvas></div>
+</div>
+
+<script src="js/standards.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/costs.js"></script>
+<script src="js/study.js"></script>
+<script src="js/render.js"></script>
+<script src="js/view3d.js"></script>
+<script>
+(function () {
+'use strict';
+const E = window.ENGINE, S = window.STANDARDS, ST = window.STUDY, $ = id => document.getElementById(id);
+const q = new URLSearchParams(location.search);
+const T = {};                     // timings, ms
+let viewer = null, sel = null, others = [];
+
+function status(msg, err) { const el = $('status'); el.textContent = msg; el.className = err ? 'err' : ''; }
+
+/* A fixed canvas size when asked for: a hidden browser pane reports a tiny
+   box, and the viewer sizes itself from the CSS box. */
+if (q.get('bare') === '1') $('panel').style.display = 'none';     // the canvas alone, for screenshots
+if (q.get('w') && q.get('h')) {
+  const st = $('stage');
+  st.style.flex = 'none'; st.style.width = q.get('w') + 'px'; st.style.height = q.get('h') + 'px';
+}
+
+/* The same cfg app.js builds (buildCfg over loadProject's defaults), with the
+   stride chosen as updateStandard does when it is on auto, rounded and
+   clamped to the slider's 50–2500 m in 25 m steps. */
+function makeCfg(controls) {
+  const d = E.G.defaults || {};
+  const mode = S.MODES[d.mode] ? d.mode : 'road';
+  const cfg = {
+    mode, params: S.defaultParams(mode),
+    designSpeed: d.designSpeed || S.MODES[mode].defaultSpeed,
+    weights: Object.assign({}, E.DEFAULT_WEIGHTS), criteriaWeights: {},
+    costOverrides: { rates: {}, qrates: {} }, useDesirable: false,
+    closed: !!d.closed, stopAtControls: true, corridor: 0.30, tieControls: true,
+  };
+  if (S.MODES[mode].speeds.indexOf(cfg.designSpeed) < 0) cfg.designSpeed = S.MODES[mode].defaultSpeed;
+  const std = S.derive(cfg.mode, cfg.designSpeed, cfg.params, cfg.useDesirable);
+  let direct = 0;
+  for (let i = 1; i < controls.length; i++)
+    direct += Math.hypot(controls[i].E - controls[i-1].E, controls[i].N - controls[i-1].N);
+  cfg.stride = Math.max(50, Math.min(2500, Math.round(E.strideFor(std.rGoverning, direct) / 25) * 25));
+  cfg.accel = std.kinematics.accel; cfg.brake = std.kinematics.brake; cfg.dwell = std.kinematics.dwell;
+  return cfg;
+}
+
+const defer = fn => new Promise(r => setTimeout(() => r(fn()), 20));
+
+async function main() {
+  if (!window.VIEW3D) { status('js/view3d.js did not load', true); return; }
+  viewer = VIEW3D.create($('c3d'), {
+    webgl1: q.get('webgl1') === '1',
+    onPick: hit => { setChainage(hit.i); },
+    onHover: hit => { if (hit) { viewer.setMarker(hit.i); readout(hit.i); } },
+  });
+  if (!viewer.ok) { status(viewer.error, true); return; }
+  window.V3 = viewer;             // console access while developing
+
+  let t = performance.now();
+  const idx = await (await fetch('projects/index.json', { cache: 'no-store' })).json();
+  const projects = idx.projects || [];
+  const pid = q.get('project') || 'demo';
+  const p = projects.find(x => x.id === pid) || projects.find(x => x.id === 'demo') || projects[0];
+  projects.forEach(x => $('proj').add(new Option(x.name, x.id)));
+  $('proj').value = p.id;
+  $('proj').onchange = () => { q.set('project', $('proj').value); location.search = q.toString(); };
+
+  status('downloading ' + p.name + '…');
+  const payload = await (await fetch('projects/' + p.file, { cache: 'no-store' })).json();
+  T.fetch = performance.now() - t; t = performance.now();
+  await E.loadProject(payload, (i, n, k) => status('decompressing ' + k + '…'));
+  T.decompress = performance.now() - t;
+
+  let controls = (E.G.controls || []).map((c, i) => ({ id: c.id || 'CP' + (i+1), name: c.name || c.id,
+                                                        E: c.E, N: c.N, kind: c.kind || 'control' }));
+  const cfg = makeCfg(controls);
+  if (controls.length > 8 && !cfg.closed) controls = controls.slice(0, 2);
+
+  t = performance.now();
+  viewer.setGrid(E.G);
+  T.setGrid = performance.now() - t;
+  buildLayerUI();
+
+  const useRef = E.G.reference && q.get('route') !== '1';
+  status(useRef ? 'evaluating the reference alignment…' : 'routing option A (balanced)…');
+  t = performance.now();
+  sel = await defer(() => useRef
+    ? ST.evaluateReference(E.G.reference, cfg)
+    : ST.runOne({ id: 'A', name: 'Balanced', priority: 'balanced', V: cfg.designSpeed, offset: 0 }, cfg, controls));
+  T.route = performance.now() - t;
+  if (!sel || sel.error) { status('routing failed: ' + (sel && sel.error), true); return; }
+  sel.colour = ST.rampColour(0);
+
+  t = performance.now();
+  viewer.setScene({ selected: sel, others: [] });
+  T.scene = performance.now() - t;
+  $('ch').max = sel.P.length - 1;
+  status(`${sel.sc.name}: ${(sel.metrics.length / 1000).toFixed(2)} km · ${E.G.nx}×${E.G.ny} cells at ${E.G.cell} m`);
+  stats();
+
+  /* Alternatives, routed after the first frame is up so the bench is usable
+     while they run. Each is a full search; skip with ?others=0. */
+  if (!useRef && q.get('others') !== '0') {
+    const list = [{ id: 'C', name: 'Shortest', priority: 'shortest', V: cfg.designSpeed, offset: 0 },
+                  { id: 'F', name: 'Terrain hugging', priority: 'terrain', V: cfg.designSpeed, offset: 0 },
+                  { id: 'J', name: 'Corridor — left', priority: 'balanced', V: cfg.designSpeed, offset: 0.14 }];
+    for (let k = 0; k < list.length; k++) {
+      status(`routing alternative ${list[k].id} (${list[k].name})…`);
+      const o = await defer(() => { try { return ST.runOne(list[k], cfg, controls); } catch (e) { return { error: e.message }; } });
+      if (o && !o.error) { o.colour = ST.rampColour(0.35 + 0.3 * k); others.push(o); }
+    }
+    t = performance.now();
+    applyScene();
+    T.sceneWithOthers = performance.now() - t;
+    status(`${sel.sc.name}: ${(sel.metrics.length / 1000).toFixed(2)} km, plus ${others.length} alternatives`);
+    stats();
+  }
+}
+
+function applyScene() {
+  viewer.setScene({ selected: sel, others: $('others').checked ? others : [], fit: false });
+}
+
+function buildLayerUI() {
+  const host = $('layers'); host.innerHTML = '';
+  for (const L of viewer.layers()) {
+    const lab = document.createElement('label'); lab.className = 'chk';
+    lab.innerHTML = `<input type="checkbox"${L.on ? ' checked' : ''}><span class="sw" ` +
+                    `style="background:rgb(${L.rgb.join(',')})"></span>${L.label}`;
+    lab.querySelector('input').onchange = e => viewer.setOptions({ showLayers: { [L.key]: e.target.checked } });
+    host.appendChild(lab);
+  }
+  if (!host.children.length) host.innerHTML = '<span class="help">none in this project</span>';
+}
+
+function readout(i) {
+  if (!sel) return;
+  const P = sel.P[i], s = sel.structs[i];
+  $('read').textContent = `${(P.s / 1000).toFixed(3)} km · ${sel.vp.z[i].toFixed(1)} m · ${s ? s.label : ''}`;
+}
+function setChainage(i) { $('ch').value = i; viewer.setMarker(i); readout(i); }
+
+function stats() {
+  const s = viewer.stats, f = v => v === undefined ? '—' : Math.round(v);
+  const runs = {};
+  for (const r of sel.runs) runs[r.type.label] = (runs[r.type.label] || 0) + (r.s1 - r.s0);
+  $('stats').textContent =
+    `context      ${s.gl}\n` +
+    `fetch        ${f(T.fetch)} ms\ndecompress   ${f(T.decompress)} ms\n` +
+    `route        ${f(T.route)} ms\nsetGrid      ${f(T.setGrid)} ms\n` +
+    `setScene     ${f(T.scene)} ms (terrain ${s.terrainMs}, textures ${s.textureMs}, line ${s.alignmentMs})\n` +
+    (T.sceneWithOthers !== undefined ? `+others      ${f(T.sceneWithOthers)} ms (terrain reused: ${s.reusedTerrain})\n` : '') +
+    `block        ${s.windowKm[0]} × ${s.windowKm[1]} km\n` +
+    `mesh         ${s.vertices.toLocaleString()} vertices, step ${s.meshStep} (${s.meshSpacing} m)\n` +
+    `texture      ${s.texture[0]}×${s.texture[1]} at ${s.texel} m\n` +
+    Object.keys(runs).map(k => `${k.padEnd(12)} ${(runs[k] / 1000).toFixed(2)} km`).join('\n');
+}
+
+$('ve').oninput = e => { $('veV').textContent = '×' + e.target.value; viewer.setVerticalExaggeration(+e.target.value); };
+$('ta').oninput = e => { $('taV').textContent = Math.round(e.target.value * 100) + ' %'; viewer.setOptions({ terrainAlpha: +e.target.value }); };
+$('rw').oninput = e => { $('rwV').textContent = '×' + e.target.value; viewer.setOptions({ ribbonWidth: +e.target.value }); };
+for (const k of ['xray', 'hidden', 'slopes', 'piers', 'labels'])
+  $(k).onchange = e => viewer.setOptions({ [k]: e.target.checked });
+$('others').onchange = () => { if (sel) applyScene(); };
+$('reset').onclick = () => viewer.resetView();
+$('snap').onclick = () => { const u = viewer.toDataURL(); if (u) { const a = document.createElement('a'); a.href = u; a.download = 'view3d.png'; a.click(); } };
+$('ch').oninput = e => { if (sel) setChainage(+e.target.value); };
+$('ch').onchange = e => { if (sel) viewer.flyTo(sel.P[+e.target.value].s); };
+
+main().catch(err => { status('error: ' + err.message, true); console.error(err); });
+})();
+</script>
+</body>
+</html>

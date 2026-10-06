@@ -161,9 +161,16 @@ const CRITERIA = [
   { key: 'community', label: 'Settlement impact',dir: 'min', weight: 12,
     get: r => (r.q.impacts.built ? r.q.impacts.built.ha : 0) + r.q.land.builtM2/10000,
     fmt: v => v.toFixed(0) + ' ha' },
-  { key: 'environment',label:'Protected land',   dir: 'min', weight: 11,
-    get: r => (r.q.impacts.protected ? r.q.impacts.protected.ha : 0)
-            + (r.q.impacts.woodland ? r.q.impacts.woodland.ha : 0) * 0.6,
+  /* Sensitive land the line occupies at the surface (tunnels are excluded
+     where the footprint is measured). Mangrove counts in full — in India it
+     is CRZ-IA and needs court leave to fell; other wetland and woodland at a
+     discount; the coastal-zone proxy lightly, since it is regulated land,
+     not necessarily habitat. Layers a project does not carry contribute 0, so
+     older projects score exactly as before. */
+  { key: 'environment',label:'Environmental land',dir: 'min', weight: 11,
+    get: r => { const I = r.q.impacts, ha = k => (I[k] ? I[k].ha : 0);
+                return ha('protected') + ha('woodland') * 0.6 + ha('mangrove')
+                     + ha('wetland') * 0.6 + ha('crz') * 0.2; },
     fmt: v => v.toFixed(0) + ' ha' },
 ];
 

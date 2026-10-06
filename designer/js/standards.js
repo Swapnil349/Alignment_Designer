@@ -98,6 +98,39 @@ function maglevSpeed(R_m, thetaDeg, aq) {
   return Math.sqrt(Math.max(0, (aq + G * Math.sin(th)) * Math.abs(R_m) / Math.cos(th))) * 3.6;
 }
 
+/* ===================================================== VERTICAL POLICY == */
+/* Whether a railway follows the ground or is elevated by default is a policy,
+   not a consequence of the terrain — Indian high-speed practice is viaduct
+   almost throughout (MAHSR: 90 % viaduct on a plain where earthworks would be
+   cheaper), because land, flooding and severance decide it. So it is a
+   parameter. The viaduct defaults come from the 1,531 surveyed piers of MAHSR
+   package C-4 S5: rail is never less than 8.1 m above ground (the grade line
+   just clears the ground plus a pier at every sag) and 11.75 m at the median.
+   The tunnel figures are for a bored double-track tube: rail about 30 m under
+   the surface or the creek bed (MAHSR's Thane Creek tunnel is 20–25 m below the
+   bed to the crown, and a 13 m tube puts the rail ~10 m below its crown). The
+   creek bed itself is not in any DEM, which models water as a flat surface —
+   so its depth below that surface is a stated assumption, to be varied. Tunnel
+   legs are set per control point (its "leg" field); the two tunnel sliders
+   apply to those legs only. */
+const VPOLICY_PARAMS = {
+  vpolicy:  { label: 'Vertical policy', type: 'select', value: 'ground',
+              options: [['ground', 'Follow the ground'], ['elevated', 'Elevated (viaduct) by default']] },
+  clearMin: { label: 'Viaduct: least rail above ground', type: 'range', value: 8, min: 3, max: 20, step: 0.5, unit: 'm' },
+  clearTyp: { label: 'Viaduct: typical rail above ground', type: 'range', value: 11.5, min: 5, max: 25, step: 0.5, unit: 'm' },
+  tunDepth: { label: 'Tunnel: rail below ground / bed', type: 'range', value: 30, min: 12, max: 90, step: 1, unit: 'm' },
+  bedDepth: { label: 'Tunnel: creek bed below water', type: 'range', value: 6, min: 0, max: 20, step: 0.5, unit: 'm' },
+};
+function vpolicyOf(p, maxGrade) {
+  return { mode: p.vpolicy || 'ground', clearMin: +p.clearMin, clearTyp: Math.max(+p.clearTyp, +p.clearMin),
+           depth: +p.tunDepth, waterDepth: +p.bedDepth, rampGrade: maxGrade * 0.8 };
+}
+function vpolicyBasis(p) {
+  return p.vpolicy === 'elevated'
+    ? `Elevated by default: rail ≥ ground + ${(+p.clearMin).toFixed(1)} m, aiming at + ${(+p.clearTyp).toFixed(1)} m (MAHSR S5: least 8.1, median 11.75 m)`
+    : 'Follows the ground: viaduct, bridge or tunnel only where cut/fill depth calls for one';
+}
+
 /* ============================================================== THE MODES == */
 /* `params` are the knobs a designer legitimately turns for a given mode; they
    appear in the UI. `derive` turns (design speed + params) into the geometric
@@ -168,6 +201,7 @@ const MODES = {
       ruling: { label: 'Ruling gradient', type: 'range', value: 1.0, min: 0.3, max: 3.0, step: 0.1, unit: '%' },
       tracks: { label: 'Tracks', type: 'select', value: '2',
                 options: [['1','Single'],['2','Double']] },
+      ...VPOLICY_PARAMS,
     },
     kinematics: { accel: 0.6, brake: 0.8, dwell: 60 },
     derive(V, p) {
@@ -186,12 +220,14 @@ const MODES = {
         // Indian Railways / UIC: the longest of the three ramp-rate criteria
         transition: Math.max(0.008 * D * V, 0.008 * I * V, 0.72 * D) ,
         width, sideSlope: 2.0, sight: 0, super: D,
+        vpolicy: vpolicyOf(p, +p.ruling),
         basis: [
           `R_min = ${k}·V²/(D+I) = ${k}·${V}²/(${D}+${I}) = ${Math.round(rMin)} m — UIC 703 / EN 13803`,
           `Gauge ${(GAUGE[p.gauge]||GAUGE.standard).label}, cant ${D} mm, cant deficiency ${I} mm`,
           `Ruling gradient ${(+p.ruling).toFixed(1)} % (1 in ${Math.round(100/+p.ruling)})`,
           `Vertical curve R = max(2 500, 0.35·V²) = ${Math.round(vR).toLocaleString()} m`,
           `Transition L = max(0.008·D·V, 0.008·I·V, 0.72·D) = ${Math.round(Math.max(0.008*D*V, 0.008*I*V, 0.72*D))} m`,
+          vpolicyBasis(p),
         ],
       };
     },
@@ -209,7 +245,9 @@ const MODES = {
       cant:    { label: 'Max cant D', type: 'range', value: 160, min: 100, max: 200, step: 5, unit: 'mm' },
       cantDef: { label: 'Cant deficiency I', type: 'range', value: 80, min: 40, max: 130, step: 5, unit: 'mm' },
       ruling:  { label: 'Ruling gradient', type: 'range', value: 2.5, min: 0.5, max: 4.0, step: 0.1, unit: '%' },
-      vfactor: { label: 'Vertical R factor', type: 'range', value: 0.35, min: 0.25, max: 0.60, step: 0.05, unit: '× V²' },
+      // 0.15 reaches the 25,000 m MAHSR builds to at 350 km/h (0.20·V²)
+      vfactor: { label: 'Vertical R factor', type: 'range', value: 0.35, min: 0.15, max: 0.60, step: 0.01, unit: '× V²' },
+      ...VPOLICY_PARAMS,
     },
     kinematics: { accel: 0.5, brake: 0.6, dwell: 90 },
     derive(V, p) {
@@ -226,12 +264,14 @@ const MODES = {
         vCrestR: vR, vSagR: vR,
         transition: V * D / 180,                  // cant ramp dD/dt ≤ 50 mm/s
         width: 14.0, sideSlope: 2.0, sight: 0, super: D,
+        vpolicy: vpolicyOf(p, +p.ruling),
         basis: [
           `R_min = 11.8·V²/(D+I) = 11.8·${V}²/(${D}+${I}) = ${Math.round(rMin)} m — TSI INF`,
           `Desirable R at D 150 / I 40 = ${Math.round(rDes).toLocaleString()} m — comfort at line speed`,
           `Ruling gradient ${(+p.ruling).toFixed(1)} % (TSI allows 35 ‰ on dedicated high-speed lines)`,
           `Vertical curve R = ${(+p.vfactor).toFixed(2)}·V² = ${Math.round(vR).toLocaleString()} m`,
           `Transition L = V·D/180 = ${Math.round(V*D/180)} m at a 50 mm/s cant ramp`,
+          vpolicyBasis(p),
         ],
       };
     },
@@ -283,6 +323,7 @@ const MODES = {
       cant:    { label: 'Max cant D', type: 'range', value: 110, min: 50, max: 160, step: 5, unit: 'mm' },
       cantDef: { label: 'Cant deficiency I', type: 'range', value: 85, min: 40, max: 130, step: 5, unit: 'mm' },
       ruling:  { label: 'Ruling gradient', type: 'range', value: 3.5, min: 1.0, max: 6.0, step: 0.1, unit: '%' },
+      ...VPOLICY_PARAMS,
     },
     kinematics: { accel: 1.0, brake: 1.1, dwell: 30 },
     derive(V, p) {
@@ -295,10 +336,12 @@ const MODES = {
         vCrestR: vR, vSagR: vR,
         transition: Math.max(20, 0.008 * D * V),
         width: 10.0, sideSlope: 1.5, sight: 0, super: D,
+        vpolicy: vpolicyOf(p, +p.ruling),
         basis: [
           `R_min = max(120, 11.8·V²/(D+I)) = ${Math.round(rMin)} m — the 120 m floor is the vehicle, not the comfort rule`,
           `Ruling gradient ${(+p.ruling).toFixed(1)} % — metro stock is powered on every axle`,
           `Vertical curve R = max(1 500, 0.25·V²) = ${Math.round(vR).toLocaleString()} m`,
+          vpolicyBasis(p),
         ],
       };
     },

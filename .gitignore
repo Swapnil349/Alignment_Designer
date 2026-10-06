@@ -21,3 +21,12 @@ desktop.ini
 
 # local Claude Code state (launch.json is shared on purpose)
 .claude/settings.local.json
+
+# downloaded study data (DEM tiles, OSM layers) — re-fetch with the scripts
+studies/*/raw/
+
+# MAHSR study: NHSRCL design data extracted from CivilWorksApp, and the projects
+# built from it, stay local; the owner has not cleared it for a public repo
+studies/mahsr/private/
+studies/mahsr/raw/
+designer/projects/mahsr_*/

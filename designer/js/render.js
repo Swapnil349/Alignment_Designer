@@ -57,6 +57,10 @@ const LAYER_STYLE = {
   rail:        { rgb: [110, 60, 140], alpha: 0.60, label: 'Existing railway' },
   farmland:    { rgb: [180, 190, 100],alpha: 0.35, label: 'High-grade farmland' },
   greenbelt:   { rgb: [120, 170, 110],alpha: 0.35, label: 'Green belt' },
+  // drawn in this order: the broad regulated zone first, habitat on top of it
+  crz:         { rgb: [235, 170, 30], alpha: 0.28, label: 'Coastal regulation zone' },
+  wetland:     { rgb: [96, 176, 168], alpha: 0.50, label: 'Wetland / mudflat' },
+  mangrove:    { rgb: [0, 122, 92],   alpha: 0.70, label: 'Mangrove' },
   exclusion:   { rgb: [198, 40, 40],  alpha: 0.55, label: 'No-go zone' },
 };
 
@@ -153,6 +157,7 @@ class MapView {
     const cv = this.cv;
     let drag = false, lx = 0, ly = 0, moved = false;
     cv.addEventListener('mousedown', e => {
+      if (e.button !== 0) return;          // right button picks, it never pans
       moved = false;
       const hit = this.hitControl(e.offsetX, e.offsetY);
       if (this.editMode !== 'pan' && hit >= 0) { this.dragIdx = hit; return; }
@@ -177,13 +182,39 @@ class MapView {
       }
       if (this.onHover) this.onHover(this.toWorld(e.offsetX, e.offsetY), e);
       if (!drag) {
-        cv.style.cursor = this.editMode === 'add' ? 'crosshair'
-                        : this.hitControl(e.offsetX, e.offsetY) >= 0 ? 'move' : 'grab';
+        let cur = this.editMode === 'add' ? 'crosshair'
+                : this.hitControl(e.offsetX, e.offsetY) >= 0 ? 'move' : 'grab';
+        let tip = '';
+        if (cur === 'grab' && this.study && this.study.length) {
+          const hits = this.pickOptions(e.offsetX, e.offsetY, 9);
+          if (hits.length) {
+            const r = this.pickOption(e.offsetX, e.offsetY, 9);
+            const near = hits.filter(h => h.d <= hits[0].d + 1.5);
+            cur = 'pointer';
+            tip = r.sc.id === this.selectedId
+              ? `Option ${r.sc.id} — ${r.sc.name} (selected)`
+              : `Option ${r.sc.id} — ${r.sc.name}: right-click to select`;
+            if (near.length > 1)
+              tip += `\n${near.length} options share this line: ` +
+                     near.map(h => h.r.sc.id).join(', ') + ' — right-click again to cycle';
+          }
+        }
+        cv.style.cursor = cur;
+        if (cv.title !== tip) cv.title = tip;
         return;
       }
       moved = true;
       this.ox += e.offsetX - lx; this.oy += e.offsetY - ly;
       lx = e.offsetX; ly = e.offsetY; this.draw();
+    });
+    /* Right-click an alignment to select that option — the same as clicking
+       its row in the comparison table. With no option family on the map the
+       browser's own menu is left alone. */
+    cv.addEventListener('contextmenu', e => {
+      if (!this.study || !this.study.length) return;
+      e.preventDefault();
+      const r = this.pickOption(e.offsetX, e.offsetY, 10);
+      if (this.onPickOption) this.onPickOption(r ? r.sc.id : null, e);
     });
     cv.addEventListener('click', e => {
       if (this.editMode !== 'delete') return;
@@ -217,15 +248,31 @@ class MapView {
   demOverlay() {
     if (this._demCv) return this._demCv;
     const G = this.G, A = G.layer.dem, nx = G.nx, ny = G.ny, cell = G.cell;
-    let VMIN, VMAX;
+    let VMIN, VMAX, relief;
+    /* Two ways a project can pin its colours:
+         terrainRange  the whole ramp, sea blues included (London: −40 … 230 m
+                       AOD, matching the published sheets);
+         terrainFocus  the elevations worth telling apart — spread over the
+                       land part of the ramp. The importer sets it from the
+                       ground along the station line, because a project's
+                       rectangle can hold terrain the corridor never goes near:
+                       Delhi – Varanasi's north-east corner is the Nepal
+                       Himalaya, and a 1–99 % stretch over that painted the
+                       whole Gangetic plain one flat green. */
     const fixed = G.defaults && G.defaults.terrainRange;
-    if (fixed && fixed.length === 2) { VMIN = +fixed[0]; VMAX = +fixed[1]; }
+    const focus = G.defaults && G.defaults.terrainFocus;
+    if (fixed && fixed.length === 2) { VMIN = +fixed[0]; VMAX = +fixed[1]; relief = VMAX - VMIN; }
     else {
-      const step = Math.max(1, Math.floor(A.length / 40000)), smp = [];
-      for (let i = 0; i < A.length; i += step) smp.push(A[i]);
-      smp.sort((p, q) => p - q);
-      const lo = smp[Math.floor(smp.length * 0.01)], hi = smp[Math.floor(smp.length * 0.99)];
+      let lo, hi;
+      if (focus && focus.length === 2) { lo = +focus[0]; hi = +focus[1]; }
+      else {
+        const step = Math.max(1, Math.floor(A.length / 40000)), smp = [];
+        for (let i = 0; i < A.length; i += step) smp.push(A[i]);
+        smp.sort((p, q) => p - q);
+        lo = smp[Math.floor(smp.length * 0.01)]; hi = smp[Math.floor(smp.length * 0.99)];
+      }
       const span = Math.max(1, hi - lo);
+      relief = span;
       // place lo at ramp 0.22 (green) and hi at 0.95 (pale brown towards white)
       VMIN = lo - 0.22 * span / 0.73;
       VMAX = VMIN + span / 0.73;
@@ -246,7 +293,7 @@ class MapView {
     /* Vertical exaggeration was tuned at ×17 for London's 100 m grid and 280 m
        of relief. A 600 m escarpment at the same exaggeration is nothing but
        black and white, so it is scaled down with relief, never up. */
-    const VE = 17 * Math.min(1, 280 / Math.max(1, G.zmax - G.zmin)) * (cell / 100);
+    const VE = 17 * Math.min(1, 280 / Math.max(1, relief)) * (cell / 100);
     const az = (90 - 315) * Math.PI / 180, alt = 50 * Math.PI / 180;
     const Lx = Math.cos(az) * Math.cos(alt), Ly = Math.sin(az) * Math.cos(alt), Lz = Math.sin(alt);
     const hs = new Float32Array(nx * ny);
@@ -318,6 +365,52 @@ class MapView {
     if (!this.exportMode) { this.drawScaleBar(); this.drawNorth(); }
   }
 
+  /** Every option whose drawn line passes within tolPx pixels of a screen
+      point, nearest first: [{ r, d }]. Measured against the line as it is
+      drawn (every second point, plus the last), so what you can see is what
+      you can pick. Options often share long stretches of line — the same
+      corridor at a different speed — so a point can be on several at once. */
+  pickOptions(sx, sy, tolPx) {
+    if (!this.study || !this.study.length) return [];
+    const tol = tolPx || 9, hits = [];
+    for (const r of this.study) {
+      const P = r.P;
+      if (!P || P.length < 2) continue;
+      // a cheap screen-space box test first: the tooltip runs this on every mouse move
+      if (!r._bb) {
+        let e0 = Infinity, e1 = -Infinity, n0 = Infinity, n1 = -Infinity;
+        for (const p of P) { if (p.E < e0) e0 = p.E; if (p.E > e1) e1 = p.E; if (p.N < n0) n0 = p.N; if (p.N > n1) n1 = p.N; }
+        r._bb = [e0, n0, e1, n1];
+      }
+      const [x0, y1] = this.toScreen(r._bb[0], r._bb[1]), [x1, y0] = this.toScreen(r._bb[2], r._bb[3]);
+      if (sx < x0 - tol || sx > x1 + tol || sy < y0 - tol || sy > y1 + tol) continue;
+      let bd = tol * tol + 1e-9;
+      let [ax, ay] = this.toScreen(P[0].E, P[0].N);
+      for (let i = 2; i < P.length + 1; i += 2) {
+        const q = P[Math.min(i, P.length - 1)];
+        const [bx, by] = this.toScreen(q.E, q.N);
+        const dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy;
+        let t = L2 > 0 ? ((sx - ax) * dx + (sy - ay) * dy) / L2 : 0;
+        t = t < 0 ? 0 : t > 1 ? 1 : t;
+        const ex = ax + t * dx - sx, ey = ay + t * dy - sy, d2 = ex * ex + ey * ey;
+        if (d2 < bd) bd = d2;
+        ax = bx; ay = by;
+      }
+      if (bd <= tol * tol) hits.push({ r, d: Math.sqrt(bd) });
+    }
+    hits.sort((a, b) => a.d - b.d);
+    return hits;
+  }
+  /** The nearest option to a screen point, or null. Where lines overlap
+      (within 1.5 px of the nearest) the selected option wins, so a click on a
+      shared stretch keeps the one you are already looking at. */
+  pickOption(sx, sy, tolPx) {
+    const hits = this.pickOptions(sx, sy, tolPx);
+    if (!hits.length) return null;
+    const sel = hits.find(h => h.r.sc.id === this.selectedId && h.d <= hits[0].d + 1.5);
+    return (sel || hits[0]).r;
+  }
+
   drawStudy() {
     const ctx = this.ctx;
     ctx.lineJoin = ctx.lineCap = 'round';
@@ -327,22 +420,43 @@ class MapView {
        hypsometric relief are close to unreadable — the terrain has colour
        everywhere, so the lines need their own separation from it. */
     const path = r => {
+      // the existing design is dashed among the options, so it reads as "the
+      // line already chosen", not as one more alternative
+      ctx.setLineDash(r.isReference ? [9, 5] : []);
       ctx.beginPath();
       const P = r.P;
-      for (let i = 0; i < P.length; i += 2) {
-        const [x,y] = this.toScreen(P[i].E, P[i].N);
+      // every second point keeps this cheap; the last is always drawn, or an
+      // even-length line stops 25 m short and a closed loop shows a gap
+      for (let i = 0; i < P.length + 1; i += 2) {
+        const q = P[Math.min(i, P.length - 1)];
+        const [x,y] = this.toScreen(q.E, q.N);
         i ? ctx.lineTo(x,y) : ctx.moveTo(x,y);
+        if (i >= P.length - 1) break;
       }
       ctx.stroke();
+      ctx.setLineDash([]);
     };
-    ctx.globalAlpha = sel ? 0.45 : 0.75;
-    ctx.strokeStyle = 'rgba(255,255,255,.9)';
-    for (const r of others) { ctx.lineWidth = (r.onFront ? 3.4 : 2.4) + 2.5; path(r); }
-    ctx.globalAlpha = sel ? 0.55 : 1;
-    for (const r of others) {
-      ctx.lineWidth = r.onFront ? 3.4 : 2.4;
-      ctx.strokeStyle = r.colour || '#888';
-      path(r);
+    if (!sel) {
+      ctx.globalAlpha = 0.75;
+      ctx.strokeStyle = 'rgba(255,255,255,.9)';
+      for (const r of others) { ctx.lineWidth = (r.onFront ? 3.4 : 2.4) + 2.5; path(r); }
+      ctx.globalAlpha = 1;
+      for (const r of others) {
+        ctx.lineWidth = r.onFront ? 3.4 : 2.4;
+        ctx.strokeStyle = r.colour || '#888';
+        path(r);
+      }
+    } else {
+      /* With one option selected the rest step right back: thin, faint and
+         without their halo. At the old 55 % opacity and full width the
+         selected line was hard to tell from its neighbours. They stay visible
+         enough to right-click, and the Pareto front stays a little heavier. */
+      ctx.globalAlpha = 0.3;
+      for (const r of others) {
+        ctx.lineWidth = r.onFront ? 2.2 : 1.4;
+        ctx.strokeStyle = r.colour || '#888';
+        path(r);
+      }
     }
     ctx.globalAlpha = 1;
   }
@@ -353,10 +467,15 @@ class MapView {
     const width = (r.std && r.std.width) || 14;
     const lw = Math.max(3.5, Math.min(20, width * this.zoom));
     ctx.lineJoin = ctx.lineCap = 'round';
-    ctx.lineWidth = lw + 4; ctx.strokeStyle = 'rgba(255,255,255,.85)';
-    ctx.beginPath();
-    P.forEach((p,i) => { const [x,y] = this.toScreen(p.E,p.N); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
-    ctx.stroke();
+    const trace = () => {
+      ctx.beginPath();
+      P.forEach((p,i) => { const [x,y] = this.toScreen(p.E,p.N); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
+      ctx.stroke();
+    };
+    if (this.study && this.study.length && this.selectedId) {
+      ctx.lineWidth = lw + 8; ctx.strokeStyle = 'rgba(20,24,28,.55)'; trace();
+    }
+    ctx.lineWidth = lw + 4; ctx.strokeStyle = 'rgba(255,255,255,.85)'; trace();
 
     const rMin = (r.std && r.std.rGoverning) || 1000;
     const maxG = (r.std && r.std.maxGrade) || 3;
@@ -400,12 +519,13 @@ class MapView {
     if (this.zoom * 1000 > 6) {
       const L = P[P.length-1].s;
       const step = L > 200000 ? 25000 : L > 60000 ? 10000 : L > 20000 ? 5000 : 1000;
+      const ch0 = r.ch0 || 0;                  // label in design chainage where there is one
       ctx.font = '10px ui-monospace, monospace'; ctx.fillStyle = '#111';
       for (let i = 0; i < P.length; i++) {
-        if (P[i].s % step > 25) continue;
+        if ((((P[i].s + ch0) % step) + step) % step > 25) continue;
         const [x,y] = this.toScreen(P[i].E,P[i].N);
         ctx.fillRect(x-1.5,y-1.5,3,3);
-        ctx.fillText((P[i].s/1000).toFixed(0)+' km', x+5, y-4);
+        ctx.fillText(((P[i].s + ch0)/1000).toFixed(0)+' km', x+5, y-4);
       }
     }
     if (this.hoverIdx != null && P[this.hoverIdx]) {
@@ -491,91 +611,222 @@ class MapView {
 }
 
 /* ------------------------------------------------------------- CHARTS ---- */
-function drawProfile(cv, r, hoverIdx) {
+/* Both charts draw a chainage WINDOW [s0, s1] rather than the whole route, so
+   the long section can be zoomed and scrolled; with no view they show it all.
+   They share one left margin so the mass haul stays aligned under the section
+   at every zoom. */
+const CH_ML = 58, CH_MR = 14;
+
+function chartWindow(r, view) {
+  const L = r.P[r.P.length - 1].s;
+  let s0 = view && isFinite(view.s0) ? view.s0 : 0;
+  let s1 = view && isFinite(view.s1) ? view.s1 : L;
+  s0 = Math.max(0, Math.min(L, s0)); s1 = Math.max(0, Math.min(L, s1));
+  if (s1 - s0 < 1) { s0 = 0; s1 = L; }
+  return { s0, s1, L };
+}
+/** Indices spanning [s0, s1], one point beyond each end so lines reach the edges. */
+function indexSpan(P, s0, s1) {
+  const find = s => {
+    let lo = 0, hi = P.length - 1;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (P[m].s < s) lo = m + 1; else hi = m; }
+    return lo;
+  };
+  return [Math.max(0, find(s0) - 1), Math.min(P.length - 1, find(s1) + 1)];
+}
+/** A tick step giving roughly 6-12 labels across a span of chainage. */
+function chainageStep(span) {
+  const steps = [10, 25, 50, 100, 200, 250, 500, 1000, 2000, 2500, 5000,
+                 10000, 20000, 25000, 50000, 100000];
+  for (const st of steps) if (span / st <= 12) return st;
+  return 100000;
+}
+function chainageLabel(s, step) {
+  return (s / 1000).toFixed(step < 100 ? 3 : step < 1000 ? 2 : step < 10000 ? 1 : 0);
+}
+
+/**
+ * Long section. view = { s0, s1, ve } — chainage window in metres and vertical
+ * exaggeration ('auto' fits the visible ground and design levels; a number
+ * fixes the ratio, 1 drawing slopes as they really are). Stashes the mapping
+ * on r._profX so the app can turn a mouse position back into a chainage.
+ * r.refProfile, when present, is a GIVEN design level per point (an existing
+ * design to compare against), drawn dashed under the option's own line.
+ */
+function drawProfile(cv, r, hoverIdx, view) {
   const ctx = cv.getContext('2d'), W = cv.width, H = cv.height;
   ctx.clearRect(0,0,W,H); ctx.fillStyle='#fff'; ctx.fillRect(0,0,W,H);
   if (!r || !r.P || r.P.length < 2) return;
-  const P = r.P, vp = r.vp, n = P.length, L = P[n-1].s;
-  let zmin = Infinity, zmax = -Infinity;
-  for (let i=0;i<n;i++){ zmin=Math.min(zmin,vp.ground[i],vp.z[i]); zmax=Math.max(zmax,vp.ground[i],vp.z[i]); }
-  const pad = 26, ml = 50, topRoom = 24;
-  const range = Math.max(20, zmax - zmin);
-  zmin -= range*0.08; zmax += range*0.08;
-  const X = s => ml + (s/L)*(W-ml-14);
-  const Y = z => H-pad - ((z-zmin)/(zmax-zmin))*(H-pad-topRoom);
-  r._profX = { ml, right: 14, W, L };
+  const P = r.P, vp = r.vp;
+  const { s0, s1, L } = chartWindow(r, view);
+  const [i0, i1] = indexSpan(P, s0, s1);
+  const pad = 26, ml = CH_ML, mr = CH_MR, topRoom = 24;
+  const plotW = Math.max(10, W - ml - mr), plotH = Math.max(10, H - pad - topRoom);
+  const ref = r.refProfile || null;
+  const sgl = r.refGround || null;            // surveyed ground, where an existing design has it
+  const ch0 = r.ch0 || 0;                     // design chainage at s = 0 (MAHSR C-4 starts at 157 km)
+  // an existing design's levels: given (as designed) vs estimated by the policy
+  const est = r.isReference && (r.refSparse || r.given) ? (i => r.refSparse || !isFinite(r.given[i])) : null;
+  let hasRefLine = false, hasSgl = false;
+
+  let vmin = Infinity, vmax = -Infinity;
+  for (let i = i0; i <= i1; i++) {
+    vmin = Math.min(vmin, vp.ground[i], vp.z[i]); vmax = Math.max(vmax, vp.ground[i], vp.z[i]);
+    if (ref && isFinite(ref[i])) { vmin = Math.min(vmin, ref[i]); vmax = Math.max(vmax, ref[i]); hasRefLine = true; }
+    if (sgl && isFinite(sgl[i])) hasSgl = true;
+  }
+  let zmin, zmax, clipped = false;
+  const veFixed = view && view.ve && view.ve !== 'auto' ? +view.ve : 0;
+  if (veFixed > 0) {
+    // metres per pixel horizontally, divided by the exaggeration, vertically
+    const span = plotH * ((s1 - s0) / plotW) / veFixed;
+    const mid = (vmin + vmax) / 2;
+    zmin = mid - span / 2; zmax = mid + span / 2;
+    // a fixed ratio cannot always fit the relief (a tunnel under a hill at 1×):
+    // say so rather than let levels leave the plot unannounced
+    clipped = vmax - vmin > span;
+  } else {
+    const range = Math.max(10, vmax - vmin);
+    zmin = vmin - range * 0.08; zmax = vmax + range * 0.08;
+  }
+  const X = s => ml + ((s - s0) / (s1 - s0)) * plotW;
+  const Y = z => H - pad - ((z - zmin) / (zmax - zmin)) * plotH;
+  const veActual = (plotH / (zmax - zmin)) / (plotW / (s1 - s0));
+  r._profX = { ml, right: mr, W, L, s0, s1, ve: veActual, mPerPx: (s1 - s0) / plotW, ch0 };
+
+  ctx.save();
+  ctx.beginPath(); ctx.rect(ml, 0, plotW, H - pad); ctx.clip();
 
   ctx.beginPath();
-  for (let i=0;i<n;i++){ const x=X(P[i].s), y=Y(vp.ground[i]); i?ctx.lineTo(x,y):ctx.moveTo(x,y); }
-  ctx.lineTo(X(L),H-pad); ctx.lineTo(X(0),H-pad); ctx.closePath();
-  ctx.fillStyle='rgba(200,184,154,.72)'; ctx.fill();
+  for (let i = i0; i <= i1; i++) { const x = X(P[i].s), y = Y(vp.ground[i]); i > i0 ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
+  ctx.lineTo(X(P[i1].s), H - pad); ctx.lineTo(X(P[i0].s), H - pad); ctx.closePath();
+  ctx.fillStyle = 'rgba(200,184,154,.72)'; ctx.fill();
   ctx.beginPath();
-  for (let i=0;i<n;i++){ const x=X(P[i].s), y=Y(vp.ground[i]); i?ctx.lineTo(x,y):ctx.moveTo(x,y); }
-  ctx.strokeStyle='#7a6a4e'; ctx.lineWidth=1; ctx.stroke();
+  for (let i = i0; i <= i1; i++) { const x = X(P[i].s), y = Y(vp.ground[i]); i > i0 ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
+  ctx.strokeStyle = '#7a6a4e'; ctx.lineWidth = 1; ctx.stroke();
+
+  /* Surveyed ground (an existing design's pier GL) against the DEM: the gap
+     between the two is the DEM's datum offset plus its canopy and building
+     bias — exactly what has to be understood before a DEM-based level is
+     compared with a surveyed one. */
+  if (hasSgl) {
+    ctx.strokeStyle = '#3b2f1e'; ctx.lineWidth = 1.2; ctx.setLineDash([1.5, 2.5]);
+    ctx.beginPath(); let on = false;
+    for (let i = i0; i <= i1; i++) {
+      if (!isFinite(sgl[i])) { on = false; continue; }
+      const x = X(P[i].s), y = Y(sgl[i]);
+      if (on) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+      on = true;
+    }
+    ctx.stroke(); ctx.setLineDash([]);
+  }
 
   // control-point verticals, behind the design line
-  const chn = (r.chn || []).slice().sort((a,b)=>a.s-b.s);
+  const chn = (r.chn || []).slice().sort((a, b) => a.s - b.s);
+  ctx.setLineDash([2, 3]); ctx.strokeStyle = '#666'; ctx.lineWidth = 1;
   for (const c of chn) {
-    if (c.node && c.node.synthetic) continue;
+    if ((c.node && c.node.synthetic) || c.s < s0 || c.s > s1) continue;
     const x = X(c.s);
-    ctx.strokeStyle = '#666'; ctx.lineWidth = 1; ctx.setLineDash([2,3]);
-    ctx.beginPath(); ctx.moveTo(x, topRoom-6); ctx.lineTo(x, H-pad); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x, topRoom - 6); ctx.lineTo(x, H - pad); ctx.stroke();
   }
   ctx.setLineDash([]);
 
-  ctx.lineWidth = 3.2; ctx.lineCap = 'butt';
-  for (let i=1;i<n;i++){
-    ctx.strokeStyle = r.structs[i].colour;
-    ctx.beginPath(); ctx.moveTo(X(P[i-1].s),Y(vp.z[i-1])); ctx.lineTo(X(P[i].s),Y(vp.z[i])); ctx.stroke();
+  // a given design profile (e.g. the existing design's rail level)
+  if (ref) {
+    ctx.strokeStyle = 'rgba(20,24,28,.85)'; ctx.lineWidth = 1.6; ctx.setLineDash([6, 3]);
+    ctx.beginPath(); let on = false;
+    for (let i = i0; i <= i1; i++) {
+      if (!isFinite(ref[i])) { on = false; continue; }
+      const x = X(P[i].s), y = Y(ref[i]);
+      if (on) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+      on = true;
+    }
+    ctx.stroke(); ctx.setLineDash([]);
   }
 
-  ctx.fillStyle='#333'; ctx.font='700 10px system-ui,sans-serif';
+  ctx.lineWidth = 3.2; ctx.lineCap = 'butt';
+  for (let i = Math.max(1, i0); i <= i1; i++) {
+    ctx.strokeStyle = r.structs[i].colour;
+    // levels the existing design does not give are the policy's estimate: faint
+    ctx.globalAlpha = est && est(i) ? 0.4 : 1;
+    ctx.beginPath(); ctx.moveTo(X(P[i-1].s), Y(vp.z[i-1])); ctx.lineTo(X(P[i].s), Y(vp.z[i])); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+
+  ctx.fillStyle = '#333'; ctx.font = '700 10px system-ui,sans-serif';
   for (const c of chn) {
-    if (c.node && c.node.synthetic) continue;
+    if ((c.node && c.node.synthetic) || c.s < s0 || c.s > s1) continue;
     // Keep the label inside the plot — the terminus label sits on the right-hand
     // axis and was being cut in half by the canvas edge.
     const lab = c.node.name || c.node.id || '';
     const lw = ctx.measureText(lab).width;
-    const lx = Math.max(ml, Math.min(W - 14 - lw, X(c.s) - lw / 2));
-    ctx.fillText(lab, lx, topRoom-10);
+    const lx = Math.max(ml, Math.min(W - mr - lw, X(c.s) - lw / 2));
+    ctx.fillText(lab, lx, topRoom - 10);
   }
 
-  ctx.strokeStyle='#333'; ctx.lineWidth=1;
-  ctx.beginPath(); ctx.moveTo(ml,topRoom-6); ctx.lineTo(ml,H-pad); ctx.lineTo(W-14,H-pad); ctx.stroke();
-  ctx.fillStyle='#333'; ctx.font='10px system-ui,sans-serif';
+  ctx.strokeStyle = '#333'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(ml, topRoom - 6); ctx.lineTo(ml, H - pad); ctx.lineTo(W - mr, H - pad); ctx.stroke();
+  ctx.fillStyle = '#333'; ctx.font = '10px system-ui,sans-serif';
   const zSpan = zmax - zmin;
-  const zStep = zSpan > 900 ? 250 : zSpan > 400 ? 100 : zSpan > 160 ? 50 : zSpan > 60 ? 20 : 10;
-  for (let z=Math.ceil(zmin/zStep)*zStep; z<zmax; z+=zStep){
-    ctx.fillStyle='#333'; ctx.fillText(z+'', 6, Y(z)+3);
-    ctx.strokeStyle='rgba(0,0,0,.07)';
-    ctx.beginPath(); ctx.moveTo(ml,Y(z)); ctx.lineTo(W-14,Y(z)); ctx.stroke();
+  const zStep = zSpan > 2000 ? 500 : zSpan > 900 ? 250 : zSpan > 400 ? 100 : zSpan > 160 ? 50
+              : zSpan > 60 ? 20 : zSpan > 25 ? 10 : zSpan > 10 ? 5 : 2;
+  for (let z = Math.ceil(zmin / zStep) * zStep; z < zmax; z += zStep) {
+    ctx.fillStyle = '#333'; ctx.fillText(z + '', 6, Y(z) + 3);
+    ctx.strokeStyle = 'rgba(0,0,0,.07)';
+    ctx.beginPath(); ctx.moveTo(ml, Y(z)); ctx.lineTo(W - mr, Y(z)); ctx.stroke();
   }
-  const sStep = L > 200000 ? 25000 : L > 60000 ? 10000 : L > 20000 ? 5000 : L > 6000 ? 1000 : 500;
-  for (let s=0; s<=L; s+=sStep){
-    ctx.fillStyle='#333';
-    ctx.fillText((s/1000).toFixed(sStep < 1000 ? 1 : 0), X(s)-6, H-pad+13);
+  // ticks fall on round DESIGN chainages (s + ch0), which is what drawings quote
+  const sStep = chainageStep(s1 - s0);
+  for (let c = Math.ceil((s0 + ch0) / sStep) * sStep; c <= s1 + ch0 + 1e-6; c += sStep) {
+    const s = c - ch0, lab = chainageLabel(c, sStep), x = X(s);
+    ctx.fillStyle = '#333';
+    ctx.fillText(lab, Math.max(ml, Math.min(W - mr - 24, x - 6)), H - pad + 13);
+    ctx.strokeStyle = 'rgba(0,0,0,.18)';
+    ctx.beginPath(); ctx.moveTo(x, H - pad); ctx.lineTo(x, H - pad + 3); ctx.stroke();
   }
-  ctx.fillStyle='#555';
-  ctx.fillText('m', 6, 12); ctx.fillText('chainage (km)', W-92, H-6);
+  ctx.fillStyle = '#555';
+  ctx.fillText('m', 6, 12); ctx.fillText('chainage (km)', W - 92, H - 6);
+  // legend, left to right, only for what is actually drawn in this window
+  let lx = ml + 6;
+  const legend = (dash, col, lw, text) => {
+    ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.setLineDash(dash);
+    ctx.beginPath(); ctx.moveTo(lx, 10); ctx.lineTo(lx + 22, 10); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = '#333'; ctx.font = '10px system-ui,sans-serif'; ctx.fillText(text, lx + 26, 13);
+    lx += 34 + ctx.measureText(text).width;
+  };
+  if (ref && hasRefLine) legend([6, 3], 'rgba(20,24,28,.85)', 1.6, r.refLabel || 'existing design');
+  if (hasSgl) legend([1.5, 2.5], '#3b2f1e', 1.2, 'surveyed ground');
+  if (est) legend([], 'rgba(26,78,138,.4)', 3.2, r.refSparse ? 'levels estimated from published points'
+                                                            : 'faint: levels estimated (not in the design data)');
+  if (clipped) {
+    const t = '▲▼ levels run off the plot — zoom out or lower the exaggeration';
+    ctx.font = '600 10px system-ui,sans-serif';
+    const tw = ctx.measureText(t).width;
+    ctx.fillStyle = 'rgba(255,243,205,.95)'; ctx.fillRect(W - mr - tw - 10, topRoom - 2, tw + 8, 14);
+    ctx.fillStyle = '#8a5a00'; ctx.fillText(t, W - mr - tw - 6, topRoom + 8);
+  }
 
-  if (hoverIdx != null && P[hoverIdx]) {
+  if (hoverIdx != null && P[hoverIdx] && P[hoverIdx].s >= s0 && P[hoverIdx].s <= s1) {
     const i = hoverIdx, x = X(P[i].s);
     ctx.strokeStyle = '#c62828'; ctx.lineWidth = 1.4;
-    ctx.beginPath(); ctx.moveTo(x, topRoom-6); ctx.lineTo(x, H-pad); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x, topRoom - 6); ctx.lineTo(x, H - pad); ctx.stroke();
     ctx.beginPath(); ctx.arc(x, Y(vp.z[i]), 4.5, 0, 7);
     ctx.fillStyle = '#fff'; ctx.fill();
     ctx.strokeStyle = '#c62828'; ctx.lineWidth = 2; ctx.stroke();
     const d = vp.diff[i];
-    const lab = `${(P[i].s/1000).toFixed(2)} km · ground ${vp.ground[i].toFixed(0)} · ` +
-                `design ${vp.z[i].toFixed(0)} m · ${d>=0?'fill':'cut'} ${Math.abs(d).toFixed(1)} m · ` +
+    const lab = `${((P[i].s + ch0)/1000).toFixed(3)} km · ground ${vp.ground[i].toFixed(1)} · ` +
+                (sgl && isFinite(sgl[i]) ? `surveyed ${sgl[i].toFixed(1)} · ` : '') +
+                `design ${vp.z[i].toFixed(1)} m · ${d>=0?'fill':'cut'} ${Math.abs(d).toFixed(1)} m · ` +
                 `${vp.grade[i].toFixed(2)} %` +
+                (ref && isFinite(ref[i]) ? ` · existing ${ref[i].toFixed(1)} (${(vp.z[i]-ref[i]>=0?'+':'')}${(vp.z[i]-ref[i]).toFixed(1)}) m` : '') +
                 (r.sp && r.sp.v ? ` · ${(r.sp.v[i]*3.6).toFixed(0)} km/h` : '');
     ctx.font = '600 10.5px system-ui,sans-serif';
     const wpx = ctx.measureText(lab).width + 10;
-    const bx = Math.max(ml, Math.min(W-14-wpx, x - wpx/2));
-    ctx.fillStyle = 'rgba(255,255,255,.95)'; ctx.fillRect(bx, H-pad-20, wpx, 15);
-    ctx.strokeStyle = '#c62828'; ctx.lineWidth = 1; ctx.strokeRect(bx, H-pad-20, wpx, 15);
-    ctx.fillStyle = '#7a1010'; ctx.fillText(lab, bx+5, H-pad-9);
+    const bx = Math.max(ml, Math.min(W - mr - wpx, x - wpx / 2));
+    ctx.fillStyle = 'rgba(255,255,255,.95)'; ctx.fillRect(bx, H - pad - 20, wpx, 15);
+    ctx.strokeStyle = '#c62828'; ctx.lineWidth = 1; ctx.strokeRect(bx, H - pad - 20, wpx, 15);
+    ctx.fillStyle = '#7a1010'; ctx.fillText(lab, bx + 5, H - pad - 9);
   }
 }
 
@@ -584,55 +835,62 @@ function drawProfile(cv, r, hoverIdx) {
    it falls it is consuming it, and a curve that returns to zero is a balanced
    design. The vertical distance between two points on the curve is the volume
    that has to be hauled between them — which is why this drawing, and not the
-   cut/fill totals, is what tells you whether the earthworks are sensible. */
-function drawMassHaul(cv, r, hoverIdx) {
+   cut/fill totals, is what tells you whether the earthworks are sensible.
+   Drawn over the same chainage window as the long section. */
+function drawMassHaul(cv, r, hoverIdx, view) {
   const ctx = cv.getContext('2d'), W = cv.width, H = cv.height;
   ctx.clearRect(0,0,W,H); ctx.fillStyle='#fff'; ctx.fillRect(0,0,W,H);
-  if (!r || !r.q || !r.q.massHaul) return;
-  const P = r.P, m = r.q.massHaul, n = P.length, L = P[n-1].s;
+  if (!r || !r.q || !r.q.massHaul || !r.P || r.P.length < 2) return;
+  const P = r.P, m = r.q.massHaul;
+  const { s0, s1 } = chartWindow(r, view);
+  const [i0, i1] = indexSpan(P, s0, s1);
   let lo = 0, hi = 0;
-  for (let i=0;i<n;i++){ if (m[i]<lo) lo=m[i]; if (m[i]>hi) hi=m[i]; }
+  for (let i = i0; i <= i1; i++) { if (m[i] < lo) lo = m[i]; if (m[i] > hi) hi = m[i]; }
   const span = Math.max(1, hi - lo);
-  lo -= span*0.1; hi += span*0.1;
-  const pad = 24, ml = 58;
-  const X = s => ml + (s/L)*(W-ml-14);
-  const Y = v => H-pad - ((v-lo)/(hi-lo))*(H-pad-16);
+  lo -= span * 0.1; hi += span * 0.1;
+  const pad = 24, ml = CH_ML, mr = CH_MR, plotW = Math.max(10, W - ml - mr);
+  const X = s => ml + ((s - s0) / (s1 - s0)) * plotW;
+  const Y = v => H - pad - ((v - lo) / (hi - lo)) * (H - pad - 16);
 
+  ctx.save();
+  ctx.beginPath(); ctx.rect(ml, 0, plotW, H - pad); ctx.clip();
   // zero line — the balance point
-  ctx.strokeStyle='#999'; ctx.lineWidth=1; ctx.setLineDash([4,3]);
-  ctx.beginPath(); ctx.moveTo(ml,Y(0)); ctx.lineTo(W-14,Y(0)); ctx.stroke();
+  ctx.strokeStyle = '#999'; ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
+  ctx.beginPath(); ctx.moveTo(ml, Y(0)); ctx.lineTo(W - mr, Y(0)); ctx.stroke();
   ctx.setLineDash([]);
-
   ctx.beginPath();
-  for (let i=0;i<n;i++){ const x=X(P[i].s), y=Y(m[i]); i?ctx.lineTo(x,y):ctx.moveTo(x,y); }
-  ctx.lineTo(X(L), Y(0)); ctx.lineTo(X(0), Y(0)); ctx.closePath();
+  for (let i = i0; i <= i1; i++) { const x = X(P[i].s), y = Y(m[i]); i > i0 ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
+  ctx.lineTo(X(P[i1].s), Y(0)); ctx.lineTo(X(P[i0].s), Y(0)); ctx.closePath();
   ctx.fillStyle = 'rgba(180,120,90,.28)'; ctx.fill();
   ctx.beginPath();
-  for (let i=0;i<n;i++){ const x=X(P[i].s), y=Y(m[i]); i?ctx.lineTo(x,y):ctx.moveTo(x,y); }
-  ctx.strokeStyle='#8a4b2a'; ctx.lineWidth=1.8; ctx.stroke();
+  for (let i = i0; i <= i1; i++) { const x = X(P[i].s), y = Y(m[i]); i > i0 ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
+  ctx.strokeStyle = '#8a4b2a'; ctx.lineWidth = 1.8; ctx.stroke();
+  ctx.restore();
 
-  ctx.strokeStyle='#333'; ctx.lineWidth=1;
-  ctx.beginPath(); ctx.moveTo(ml,14); ctx.lineTo(ml,H-pad); ctx.lineTo(W-14,H-pad); ctx.stroke();
-  ctx.fillStyle='#333'; ctx.font='10px system-ui,sans-serif';
-  const step = Math.pow(10, Math.floor(Math.log10(span))) * (span/Math.pow(10, Math.floor(Math.log10(span))) > 4 ? 1 : 0.5);
-  for (let v=Math.ceil(lo/step)*step; v<hi; v+=step) {
-    ctx.fillStyle='#333';
-    ctx.fillText((v/1000).toFixed(0)+'k', 6, Y(v)+3);
-    ctx.strokeStyle='rgba(0,0,0,.07)';
-    ctx.beginPath(); ctx.moveTo(ml,Y(v)); ctx.lineTo(W-14,Y(v)); ctx.stroke();
+  ctx.strokeStyle = '#333'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(ml, 14); ctx.lineTo(ml, H - pad); ctx.lineTo(W - mr, H - pad); ctx.stroke();
+  ctx.fillStyle = '#333'; ctx.font = '10px system-ui,sans-serif';
+  const mag = Math.pow(10, Math.floor(Math.log10(span)));
+  const step = mag * (span / mag > 4 ? 1 : 0.5);
+  for (let v = Math.ceil(lo / step) * step; v < hi; v += step) {
+    ctx.fillStyle = '#333';
+    // a 500 m³ step needs a decimal in thousands, or 1 500 and 2 000 both read '2k'
+    ctx.fillText(Math.abs(v) >= 1000 ? (v / 1000).toFixed(step < 1000 ? 1 : 0) + 'k' : v.toFixed(0), 6, Y(v) + 3);
+    ctx.strokeStyle = 'rgba(0,0,0,.07)';
+    ctx.beginPath(); ctx.moveTo(ml, Y(v)); ctx.lineTo(W - mr, Y(v)); ctx.stroke();
   }
-  ctx.fillStyle='#555';
+  ctx.fillStyle = '#555';
   ctx.fillText('m³ cumulative', 6, 11);
   const net = r.q.earthworks.netM3;
   ctx.fillText(net >= 0 ? `surplus ${(net/1000).toFixed(0)}k m³ to dispose`
-                        : `deficit ${(-net/1000).toFixed(0)}k m³ to import`, W-190, 11);
-  if (hoverIdx != null && P[hoverIdx]) {
+                        : `deficit ${(-net/1000).toFixed(0)}k m³ to import`, W - 190, 11);
+  if (hoverIdx != null && P[hoverIdx] && P[hoverIdx].s >= s0 && P[hoverIdx].s <= s1) {
     const x = X(P[hoverIdx].s);
     ctx.strokeStyle = '#c62828'; ctx.lineWidth = 1.2;
-    ctx.beginPath(); ctx.moveTo(x, 14); ctx.lineTo(x, H-pad); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x, 14); ctx.lineTo(x, H - pad); ctx.stroke();
   }
 }
 
-global.RENDER = { MapView, drawProfile, drawMassHaul, speedColour, cutFillColour,
+global.RENDER = { MapView, drawProfile, drawMassHaul, indexSpan, CH_ML, CH_MR, speedColour, cutFillColour,
                   gradeColour, VIEW, PHASE_COL, PHASE_LAB, LAYER_STYLE };
 })(window);

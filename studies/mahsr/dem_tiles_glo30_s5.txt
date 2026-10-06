@@ -1,0 +1,21 @@
+# Copernicus GLO-30 tiles for section S5, CH 333.641 - 393.700
+# Listed 2026-10-06 with --dry-run (an HTTP HEAD on each tile; nothing downloaded):
+#   python designer/build/fetch_dem.py --controls studies/mahsr/stations_s5.csv --buffer-km 8 --res 30 --out studies/mahsr/raw/dem30 --dry-run
+# Download with the same command without --dry-run (it resumes, and skips tiles
+# already on disk), or give the URL lines below to any downloader, e.g.
+#   grep -v '^#' studies/mahsr/dem_tiles_glo30_s5.txt | wget -i - -P studies/mahsr/raw/dem30
+#
+# Copernicus GLO-30 for lon 72.869 .. 73.256, lat 21.718 .. 22.353 - 4 tiles
+#    Copernicus_DSM_COG_10_N21_00_E072_00_DEM    28.0 MB
+#    Copernicus_DSM_COG_10_N21_00_E073_00_DEM    45.3 MB
+#    Copernicus_DSM_COG_10_N22_00_E072_00_DEM    45.5 MB
+#    Copernicus_DSM_COG_10_N22_00_E073_00_DEM    46.1 MB
+# total 165 MB, of which 165 MB still to download, into studies/mahsr/raw/dem30
+#
+# Every tile in the box exists - none is reported missing (all-sea).
+# 4 tiles, 165 MB in all
+#
+https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N21_00_E072_00_DEM/Copernicus_DSM_COG_10_N21_00_E072_00_DEM.tif
+https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N21_00_E073_00_DEM/Copernicus_DSM_COG_10_N21_00_E073_00_DEM.tif
+https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N22_00_E072_00_DEM/Copernicus_DSM_COG_10_N22_00_E072_00_DEM.tif
+https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N22_00_E073_00_DEM/Copernicus_DSM_COG_10_N22_00_E073_00_DEM.tif

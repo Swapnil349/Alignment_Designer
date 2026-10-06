@@ -1,0 +1,37 @@
+# Copernicus GLO-30 tiles for the whole line, BKC - Sabarmati (12 stations)
+# Listed 2026-10-06 with --dry-run (an HTTP HEAD on each tile; nothing downloaded):
+#   python designer/build/fetch_dem.py --controls studies/mahsr/stations.csv --buffer-km 15 --res 30 --out studies/mahsr/raw/dem30 --dry-run
+# Download with the same command without --dry-run (it resumes, and skips tiles
+# already on disk), or give the URL lines below to any downloader, e.g.
+#   grep -v '^#' studies/mahsr/dem_tiles_glo30.txt | wget -i - -P studies/mahsr/raw/dem30
+#
+# Copernicus GLO-30 for lon 72.443 .. 73.324, lat 18.933 .. 23.211 - 12 tiles
+#    Copernicus_DSM_COG_10_N18_00_E072_00_DEM     4.0 MB
+#    Copernicus_DSM_COG_10_N18_00_E073_00_DEM    45.8 MB
+#    Copernicus_DSM_COG_10_N19_00_E072_00_DEM    13.3 MB
+#    Copernicus_DSM_COG_10_N19_00_E073_00_DEM    45.9 MB
+#    Copernicus_DSM_COG_10_N20_00_E072_00_DEM    10.4 MB
+#    Copernicus_DSM_COG_10_N20_00_E073_00_DEM    45.8 MB
+#    Copernicus_DSM_COG_10_N21_00_E072_00_DEM    28.0 MB
+#    Copernicus_DSM_COG_10_N21_00_E073_00_DEM    45.3 MB
+#    Copernicus_DSM_COG_10_N22_00_E072_00_DEM    45.5 MB
+#    Copernicus_DSM_COG_10_N22_00_E073_00_DEM    46.1 MB
+#    Copernicus_DSM_COG_10_N23_00_E072_00_DEM    44.6 MB
+#    Copernicus_DSM_COG_10_N23_00_E073_00_DEM    44.7 MB
+# total 420 MB, of which 420 MB still to download, into studies/mahsr/raw/dem30
+#
+# Every tile in the box exists - none is reported missing (all-sea). The small ones are mostly Arabian Sea: N18E072 4.0 MB, N19E072 13.3 MB, N20E072 10.4 MB.
+# 12 tiles, 420 MB in all
+#
+https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N18_00_E072_00_DEM/Copernicus_DSM_COG_10_N18_00_E072_00_DEM.tif
+https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N18_00_E073_00_DEM/Copernicus_DSM_COG_10_N18_00_E073_00_DEM.tif
+https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N19_00_E072_00_DEM/Copernicus_DSM_COG_10_N19_00_E072_00_DEM.tif
+https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N19_00_E073_00_DEM/Copernicus_DSM_COG_10_N19_00_E073_00_DEM.tif
+https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N20_00_E072_00_DEM/Copernicus_DSM_COG_10_N20_00_E072_00_DEM.tif
+https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N20_00_E073_00_DEM/Copernicus_DSM_COG_10_N20_00_E073_00_DEM.tif
+https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N21_00_E072_00_DEM/Copernicus_DSM_COG_10_N21_00_E072_00_DEM.tif
+https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N21_00_E073_00_DEM/Copernicus_DSM_COG_10_N21_00_E073_00_DEM.tif
+https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N22_00_E072_00_DEM/Copernicus_DSM_COG_10_N22_00_E072_00_DEM.tif
+https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N22_00_E073_00_DEM/Copernicus_DSM_COG_10_N22_00_E073_00_DEM.tif
+https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N23_00_E072_00_DEM/Copernicus_DSM_COG_10_N23_00_E072_00_DEM.tif
+https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N23_00_E073_00_DEM/Copernicus_DSM_COG_10_N23_00_E073_00_DEM.tif

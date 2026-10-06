@@ -1,6 +1,31 @@
 {
  "projects": [
   {
+   "id": "dv_delhi_agra",
+   "name": "D-V: Delhi - Agra",
+   "file": "dv_delhi_agra/project.json",
+   "thumb": "dv_delhi_agra/terrain.png",
+   "crs": "EPSG:32643",
+   "extent_km": [
+    138.8,
+    219.6
+   ],
+   "cell": 100.0,
+   "layers": [
+    "built",
+    "dem",
+    "flood",
+    "protected",
+    "rail",
+    "river_major",
+    "road_major",
+    "slope",
+    "water_body",
+    "woodland"
+   ],
+   "notes": "Imported from 32 DEM tiles (Copernicus_DSM_COG_30_N25_00_E076_00_DEM.tif \u2026) at 100 m cells."
+  },
+  {
    "id": "demo",
    "name": "Demo \u2014 coastal plain to plateau",
    "file": "demo/project.json",
